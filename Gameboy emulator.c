@@ -1,6 +1,5 @@
 // Gameboy emulator.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//TODO: finish opcodes: HALT - 0x76, STOP - 0x10 00
-//RST -> all restarts
+//TODO: finish opcodes: HALT - 0x76
 
 //**** DI INSTRUCTION -> pandocs and GCPUMANUAL incongruences. implementing pandocs instruction
 #define _CRT_SECURE_NO_WARNINGS
@@ -87,7 +86,7 @@ union registerHL
 };
 
 //cpu
-unsigned char memory[0xFFFF + 1];//65536 bytes 
+unsigned char memory[0xFFFF + 1] = { 0 };//65536 bytes 
 unsigned short opcode;
 unsigned char LCDcontroller;
 //////////////////////////////////////////////////REGISTERS//////////////////////////////////////////////////////////////////////////////////////////////
@@ -135,6 +134,8 @@ bool masterInterrupt = false; //Interrupt Master Enable Flag - IME
 //when the cpu executes the enable interrupt instruction it will only take effect in the next instruction we need a delay to activate the IME
 bool delayMasterInterrupt = false; 
 
+//HALT
+bool halt = false;
 
 //SDL
 SDL_Window* window = NULL;
@@ -164,9 +165,13 @@ void decRegister(unsigned char* registerA, unsigned char cycles);
 void addRegister16Bit(unsigned short* registerA, unsigned short* registerB, unsigned char cycles);
 void swap(unsigned char* registerA, unsigned char cycles);
 void rlcRegister(unsigned char* registerA, unsigned char cycles);
+void RLCA(unsigned char cycles);
 void rlRegister(unsigned char* registerA, unsigned char cycles);
+void RLA(unsigned char cycles);
 void rrcRegister(unsigned char* registerA, unsigned char cycles);
+void RRCA(unsigned char cycles);
 void rrRegister(unsigned char* registerA, unsigned char cycles);
+void RRA(unsigned char cycles);
 void SLA(unsigned char* registerA, unsigned char cycles);
 void SRA(unsigned char* registerA, unsigned char cycles);
 void SRL(unsigned char* registerA, unsigned char cycles);
@@ -183,7 +188,9 @@ void CALL(bool condition, unsigned char cycles);
 void RET(bool condition, unsigned char cycles);
 void RETI(unsigned char cycles);
 void PUSH(unsigned char* highByte, unsigned char* lowByte);
+void PUSHAF();
 void POP(unsigned char* highByte, unsigned char* lowByte);
+void POPAF();
 void clockTiming(unsigned char cycles);
 void updateTimers(unsigned char cycles);
 void writeInMemory(unsigned short memoryLocation, unsigned char registerA);
@@ -318,6 +325,20 @@ void initialize()
     memory[0xFF69] = 0xFF; //BCPD - GBC pal
     memory[0xFF6A] = 0xC1; //OCPS - GBC pal
     memory[0xFF6B] = 0x46; //OCPD - GBC pal
+    //
+    memory[0xFF80] = 0xCE;
+    memory[0xFF81] = 0xED;
+    memory[0xFF82] = 0x66;
+    memory[0xFF83] = 0x66;
+    memory[0xFF84] = 0xCC;
+    memory[0xFF85] = 0x0D;
+    memory[0xFF87] = 0x0B;
+    memory[0xFF88] = 0x03;
+    memory[0xFF89] = 0x73;
+    memory[0xFF8B] = 0x83;
+    memory[0xFF8D] = 0x0C;
+    memory[0xFF8F] = 0x0D;
+    //
     memory[IF] = 0xE1;
     memory[IE] = 0;
     //starting stack
@@ -327,7 +348,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\06-ld r,r.gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\02-interrupts.gb", "rb");
     if (file == NULL) {
         printf("File not found");
         exit(EXIT_FAILURE);
@@ -375,7 +396,20 @@ void loadGame(char* gameName)
 void emulateCycle()
 {
     //C01C, C088, cc50, C913, c7f9(the PC that it writes the first line in the screen), c24f
+    //020F - start of test 9
+    //CB10 - no problem     
+    //c06a -> start of srl, rr, rr, rra - clear
+    //c01a ->
+    //c007
+    //pc == 0xc02A, HL.HL = 0X9000, memory[LY] == 0x6B -> ADC and SBC wasnt implementing carry bit when checking the flags
+    //pc == 0xc2f6 -> writing to 0xFFFF not working, HL.HL == 0x9000, AF.AF == 0x0080, memory[0xFFFF] == 0;
+    //pc == 0xc01c || pc == 0xc01F || pc ==0xc02a
+    //pc == 0xc464, AF.AF == 0x0080, BC.BC == 0, DE.DE == 0, HL.HL == 0x8000 -> separate RRA instruction from RR instruction,
+    //the flags are different. after fixing the instructions the position DFF9 is differente (FF00 mine) (0000 BGB)
+    //AF.AF == 0x00f0 && BC.BC == 0x0001 && DE.DE == 0x1f7f && pc == 0xDEF8
+    //pc == 0xDEF8 -> this is where GBG tests the opcodes.
     opcode = memory[pc];
+    //memory[0xdef8] == 0x88
     //printf("checking opcode: [%X]\n", opcode);
     switch (opcode & 0xFF)
     {
@@ -525,7 +559,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x55:
-            DE.D = HL.H;
+            DE.D = HL.L;
             clockTiming(4);
             break;
         case 0x56:
@@ -581,7 +615,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x65:
-            HL.H = HL.H;
+            HL.H = HL.L;
             clockTiming(4);
             break;
         case 0x66:
@@ -719,13 +753,19 @@ void emulateCycle()
             break;
         }
         case 0xF2:
-            AF.A = memory[0xFF00 + BC.C];
+        {
+            unsigned short memoryLocation = 0xFF00 + BC.C;
+            AF.A = memory[memoryLocation];
             clockTiming(8);
             break;
+        }
         case 0xE2:
-            writeInMemory(0xFF00 + BC.C, AF.A);
+        {
+            unsigned short memoryLocation = 0xFF00 + BC.C;
+            writeInMemory(memoryLocation, AF.A);
             clockTiming(8);
             break;
+        }
         case 0x3A:
             AF.A = memory[HL.HL];
             HL.HL--;
@@ -747,15 +787,21 @@ void emulateCycle()
             clockTiming(8);
             break;
         case 0xE0:
+        {
             pc++;
-            writeInMemory(0xFF00 + memory[pc], AF.A);
+            unsigned short memoryLocation = 0xFF00 + memory[pc];
+            writeInMemory(memoryLocation, AF.A);
             clockTiming(12);
             break;
+        }
         case 0xF0:
+        {
             pc++;
-            AF.A = memory[0xFF00 + memory[pc]];
+            unsigned short memoryLocation = 0xFF00 + memory[pc];
+            AF.A = memory[memoryLocation];
             clockTiming(12);
             break;
+        }
         case 0x01:
             pc++;
             BC.C = memory[pc];
@@ -797,8 +843,12 @@ void emulateCycle()
         {
             //reseting flags
             AF.F = 0;
-            //getting immediate data in the form of signed char
-            unsigned char e8value = memory[++pc];
+            //getting immediate signed data in the form of signed char
+            pc++;
+            signed char e8value = memory[pc];
+            //the test for the CFLAG needs to use 8 total bits, in the signed form the seventh bit is thrown out as a sign value so if you have a signed
+            //value of 0xFF it will be -127 instead of 255.
+            unsigned char unsigned_e8value = e8value;
             //getting the value of 3...0 bits in SP;
             unsigned char HFlagCheck = sp & 0xF;
             //getting the value of 7...0 bits in SP;
@@ -809,23 +859,29 @@ void emulateCycle()
                 AF.F |= 0b00100000;
             }
             // checking if theres overflow from bit 7
-            if ((CFlagCheck + e8value) > 0xFF)
+            if ((CFlagCheck + unsigned_e8value) > 0xFF)
             {
                 AF.F |= 0b00010000;
             }
-            sp += e8value;
+            HL.HL = (sp + e8value);
             clockTiming(12);
             break;
         }
         case 0x08:
+        {
             pc++;
-            writeInMemory(pc, sp & 0xFF);
+            unsigned char LowerNibble = memory[pc];
             pc++;
-            writeInMemory(pc, (sp & 0xFF00) >> 8);
+            unsigned char HighNibble = memory[pc];
+            unsigned short memoryLocation = (HighNibble << 8);
+            memoryLocation |= LowerNibble;
+            writeInMemory(memoryLocation, sp & 0xFF);
+            writeInMemory(memoryLocation + 1, (sp >> 8));
             clockTiming(20);
             break;
+        }
         case 0xF5:
-            PUSH(&AF.A, &AF.F);
+            PUSHAF();
             break;
         case 0xC5:
             PUSH(&BC.B, &BC.C);
@@ -837,7 +893,8 @@ void emulateCycle()
             PUSH(&HL.H, &HL.L);
             break;
         case 0xF1:
-            POP(&AF.A, &AF.F);
+            //pc != 0xc018
+            POPAF();
             break;
         case 0xC1:
             POP(&BC.B, &BC.C);
@@ -877,7 +934,7 @@ void emulateCycle()
             addRegister(&AF.A, &memory[pc], 8);
             break;
         case 0x8F:
-            adcRegister(&AF.A, &AF.A,4 );
+            adcRegister(&AF.A, &AF.A, 4);
             break;
         case 0x88:
             adcRegister(&AF.A, &BC.B, 4);
@@ -1069,6 +1126,7 @@ void emulateCycle()
             cpRegister(&memory[HL.HL], 8);
             break;
         case 0xFE:
+            //pc != 0xc368
             pc++;
             cpRegister(&memory[pc], 8);
             break;
@@ -1136,8 +1194,11 @@ void emulateCycle()
         {
             //resetting Flags;
             AF.F = 0;
-
-            unsigned char e8value = memory[++pc];
+            pc++;
+            signed char e8value = memory[pc];
+            //the test for the CFLAG needs to use 8 total bits, in the signed form the seventh bit is thrown out as a sign value so if you have a signed
+            //value of 0xFF it will be -127 instead of 255.
+            unsigned char unsigned_e8value = e8value;
             //getting bit values 3...0;
             unsigned char HFlagCheck = sp & 0xF;
             //getting bit values 7...0;
@@ -1148,7 +1209,7 @@ void emulateCycle()
                 AF.F |= 0b00100000;
             }
             //set flag C if it overflows from bit 7;
-            if ((CFlagCheck + e8value) > 0xFF)
+            if ((CFlagCheck + unsigned_e8value) > 0xFF)
             {
                 AF.F |= 0b00010000;
             }
@@ -1190,39 +1251,38 @@ void emulateCycle()
             break;
         case 0x27:
             //converting register A to BCD
-            //if H flag is set or the lower nibble is higher than 9, add 6 to the lower nibble
-            if ((AF.F & 0b00100000) != 0 || (AF.A & 0x0F) > 9)
+            if (!testBit(AF.F, 6))
             {
-                //resets H flag
-                AF.F &= 0b11010000;
-
-                //if the addition caused the register to overflow, set the carry flag
-                if ((AF.A + 0x06) > 0xFF)
+                if (testBit(AF.F, 4) || (AF.A > 0x99))
                 {
-                    AF.F |= 0b00010000;
+                    AF.A += 0x60;
+                    SET(&AF.F, 4, 0);
                 }
-                AF.A += 6;
+                if (testBit(AF.F, 5) || ((AF.A & 0x0F) > 0x09))
+                {
+                    AF.A += 0x06;
+                }
             }
-
-            //if C flag is set or the higher nibble is higher than 9, add 6 to the higher nibble
-            if ((AF.F & 0b00010000) != 0 || (AF.A & 0xF0) > 9)
+            else
             {
-                //resets the carry flag
-                AF.F &= 0b11100000;
-
-                //if the addition caused the register to overflow, set the carry flag
-                if ((AF.A + 0x60) > 0xFF)
+                if (testBit(AF.F, 4))
                 {
-                    AF.F |= 0b00010000;
+                    AF.A -= 0x60;
                 }
-                AF.A += 0x60;
+                if (testBit(AF.F, 5))
+                {
+                    AF.A -= 0x06;
+                }
             }
-
-            //if the result is 0, set Z flag
             if (AF.A == 0)
             {
-                AF.F |= 0b10000000;
+                SET(&AF.F, 7, 0);
             }
+            else
+            {
+                RES(&AF.F, 7, 0);
+            }
+            RES(&AF.F, 5, 0);
             clockTiming(4);
             break;
         case 0x2F:
@@ -1237,7 +1297,7 @@ void emulateCycle()
             AF.F &= 0b10010000;
             //complement C flag
             //if C flag is set
-            if ((AF.F & 0b00010000) != 0)
+            if (testBit(AF.F, 4))
             {
                 AF.F &= 0b11100000;
             }
@@ -1256,16 +1316,16 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x07:
-            rlcRegister(&AF.A, 4);
+            RLCA(4);
             break;
         case 0x17:
-            rlRegister(&AF.A, 4);
+            RLA(4);
             break;
         case 0x0F:
-            rrcRegister(&AF.A, 4);
+            RRCA(4);
             break;
         case 0x1F:
-            rrRegister(&AF.A, 4);
+            RRA(4);
             break;
         case 0xC3:
             //cycle is 12 for all jumps when non matching and 16 when matching, so we will send 12 and if it passes we will send 4 inside the function
@@ -1346,6 +1406,90 @@ void emulateCycle()
         case 0xFB:
             delayMasterInterrupt = true;
             updateTimers(4);
+            break;
+        case 0xC7:
+        {
+            pc++;
+            unsigned char highByte = ((pc >> 8));
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //when the instruction is finished, pc will overflow and be set to the right position, 0.
+            pc = 0xFFFF;
+            break;
+        }
+        case 0xCF:
+        {
+            pc++;
+            unsigned char highByte = (pc >> 8);
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //same logic of instruction 0xC7 but it doesnt overflow.
+            pc = 0x07;
+            break;
+        }
+        case 0xD7:
+        {
+            pc++;
+            unsigned char highByte = (pc >> 8);
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //same logic of instruction 0xC7 but it doesnt overflow.
+            pc = 0x9;
+            break;
+        }
+        case 0xDF:
+        {
+            pc++;
+            unsigned char highByte = (pc >> 8);
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //same logic of instruction 0xC7 but it doesnt overflow.
+            pc = 0x17;
+            break;
+        }
+        case 0xE7:
+        {
+            pc++;
+            unsigned char highByte = (pc >> 8);
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //same logic of instruction 0xC7 but it doesnt overflow.
+            pc = 0x19;
+            break;
+        }
+        case 0xEF:
+        {
+            pc++;
+            unsigned char highByte = (pc >> 8);
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //same logic of instruction 0xC7 but it doesnt overflow.
+            pc = 0x27;
+            break;
+        }
+        case 0xF7:
+        {
+            pc++;
+            unsigned char highByte = (pc >> 8);
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //same logic of instruction 0xC7 but it doesnt overflow.
+            pc = 0x29;
+            break;
+        }
+        case 0xFF:
+        {
+            pc++;
+            unsigned char highByte = (pc >> 8);
+            unsigned char lowByte = (pc & 0xFF);
+            PUSH(&highByte, &lowByte);
+            //same logic of instruction 0xC7 but it doesnt overflow.
+            pc = 0x37;
+            break;
+        }
+        case 0x76:
+            
+            printf("adress of halt is: %04hX\n", pc);
             break;
         case 0xCB:
             pc++;
@@ -1954,28 +2098,28 @@ void emulateCycle()
                     RES(&memory[HL.HL], 0, 16);
                     break;
                 case 0x8F:
-                    RES(&AF.A, 0, 8);
+                    RES(&AF.A, 1, 8);
                     break;
                 case 0x88:
-                    RES(&BC.B, 0, 8);
+                    RES(&BC.B, 1, 8);
                     break;
                 case 0x89:
-                    RES(&BC.C, 0, 8);
+                    RES(&BC.C, 1, 8);
                     break;
                 case 0x8A:
-                    RES(&DE.D, 0, 8);
+                    RES(&DE.D, 1, 8);
                     break;
                 case 0x8B:
-                    RES(&DE.E, 0, 8);
+                    RES(&DE.E, 1, 8);
                     break;
                 case 0x8C:
-                    RES(&HL.H, 0, 8);
+                    RES(&HL.H, 1, 8);
                     break;
                 case 0x8D:
-                    RES(&HL.L, 0, 8);
+                    RES(&HL.L, 1, 8);
                     break;
                 case 0x8E:
-                    RES(&memory[HL.HL], 0, 16);
+                    RES(&memory[HL.HL], 1, 16);
                     break;
                 case 0x97:
                     RES(&AF.A, 2, 8);
@@ -2149,62 +2293,74 @@ void addRegister(unsigned char* registerA, unsigned char* registerB, unsigned ch
     //setting Z flag if result is 0
     if (*registerA == 0)
     {
-        AF.F |= 0b10000000;
+        SET(&AF.F, 7, 0);
     }
-
     //checking if theres overflow from bit 3 (H flag)
     if ((HFlagCheck + (e8value & 0xF)) > 0xF)
     {
-        AF.F |= 0b00100000;
+        SET(&AF.F, 5, 0);
     }
+
     // checking if theres overflow from bit 7
     if ((CFlagCheck + e8value) > 0xFF)
     {
-        AF.F |= 0b00010000;
+        SET(&AF.F, 4, 0);
     }
-    
-    
 }
 
 void adcRegister(unsigned char* registerA, unsigned char* registerB, unsigned char cycles)
 {
     clockTiming(cycles);
-    AF.F = 0;
+    RES(&AF.F, 6, 0);
     //getting immediate data in the form of signed char
     unsigned char e8value = *registerB;
     //getting the value of 3...0 bits in SP;
-    unsigned char HFlagCheck = *registerA & 0xF;
+    unsigned char HFlagCheck = *registerA & 0x0F;
     //getting the value of 7...0 bits in SP;
     unsigned char CFlagCheck = *registerA & 0xFF;
-
     //adding to register before checking if theres overflow because we have to add the previous carry to the value;
-    *registerA += e8value + ((AF.F & 0b00010000) >> 4);
+    unsigned char carryBit = 0;
+    if (testBit(AF.F, 4))
+    {
+        carryBit = 1;
+    }
+    *registerA += (e8value + carryBit);
     //if the result is 0, set Z flag
     if (*registerA == 0)
     {
-        AF.F |= 0b10000000;
+        SET(&AF.F, 7, 0);
+    }
+    else
+    {
+        RES(&AF.F, 7, 0);
     }
 
     //checking if theres overflow from bit 3 (H flag)
-    if ((HFlagCheck + (e8value & 0xF)) > 0xF)
+    if ((HFlagCheck + ((e8value & 0xF) + carryBit)) > 0xF)
     {
-        AF.F |= 0b00100000;
+        SET(&AF.F, 5, 0);
+    }
+    else
+    {
+        RES(&AF.F, 5, 0);
     }
 
     // checking if theres overflow from bit 7
-    if ((CFlagCheck + e8value) > 0xFF)
+    if ((CFlagCheck + (e8value + carryBit)) > 0xFF)
     {
-        AF.F |= 0b00010000;
+        SET(&AF.F, 4, 0);
     }
-    
+    else
+    {
+        RES(&AF.F, 4, 0);
+    }
 }
 
 void subRegister(unsigned char* registerA, unsigned char* registerB, unsigned char cycles)
 {
     clockTiming(cycles);
     AF.F = 0;
-    //setting N flag
-    AF.F |= 0b01000000;
+    SET(&AF.F, 6, 0);
     //getting immediate data in the form of signed char
     unsigned char e8value = *registerB;
     //getting the value of 3...0 bits in SP;
@@ -2216,52 +2372,63 @@ void subRegister(unsigned char* registerA, unsigned char* registerB, unsigned ch
     //if the result is 0, set Z flag
     if (*registerA == 0)
     {
-        AF.F |= 0b10000000;
+        SET(&AF.F, 7, 0);
     }
 
     if (HFlagCheck < (e8value & 0xF))
     {
-        AF.F |= 0b00100000;
+        SET(&AF.F, 5, 0);
     }
-    
+
     if (CFlagCheck < e8value)
     {
-        AF.F |= 0b00010000;
-    }  
+        SET(&AF.F, 4, 0);
+    }
 }
 
 void sbcRegister(unsigned char* registerA, unsigned char* registerB, unsigned char cycles)
 {
     clockTiming(cycles);
-    AF.F = 0;
-    //setting N flag
-    AF.F |= 0b01000000;
+    SET(&AF.F, 6, 0);
     //getting immediate data in the form of signed char
     unsigned char e8value = *registerB;
     //getting the value of 3...0 bits in SP;
     unsigned char HFlagCheck = *registerA & 0xF;
     //getting the value of 7...0 bits in SP;
     unsigned char CFlagCheck = *registerA & 0xFF;
-
-    *registerA -= (e8value + ((AF.F & 0b00010000) >> 4));
+    unsigned char carryBit = 0;
+    if (testBit(AF.F, 4))
+    {
+        carryBit = 1;
+    }
+ 
+    *registerA -= (e8value + carryBit);
     //if the result is 0, set the Z flag
     if (*registerA == 0)
     {
-        AF.F |= 0b10000000;
+        SET(&AF.F, 7, 0);
     }
     else
     {
-        AF.F &= 0b01110000;
+        RES(&AF.F, 7, 0);
     }
 
-    if (HFlagCheck < (e8value & 0xF))
+    if (HFlagCheck < ((e8value  & 0xF) + carryBit))
     {
-        AF.F |= 0b00100000;
+        SET(&AF.F, 5, 0);
+    }
+    else
+    {
+        RES(&AF.F, 5, 0);
     }
 
-    if (CFlagCheck < e8value)
+    if (CFlagCheck < (e8value + carryBit))
     {
-        AF.F |= 0b00010000;
+        SET(&AF.F, 4, 0);
+    }
+    else
+    {
+        RES(&AF.F, 4, 0);
     }
 }
 
@@ -2272,7 +2439,7 @@ void andOperation(unsigned char* registerB, unsigned char cycles)
     //resetting flags
     AF.F = 0;
     //setting the H flag
-    AF.F |= 0b00100000;
+    SET(&AF.F, 5, 0);
     AF.A &= *registerB;
 
     //if the result is zero, set the Z flag
@@ -2295,7 +2462,7 @@ void orOperation(unsigned char* registerB, unsigned char cycles)
     //if the result is zero, set the Z flag
     if (AF.A == 0)
     {
-        AF.F |= 0b10000000;
+        SET(&AF.F, 7, 0);
     }
 }
 
@@ -2305,13 +2472,12 @@ void xorOperation(unsigned char* registerB, unsigned char cycles)
     clockTiming(cycles);
     //resetting flags
     AF.F = 0;
-
     AF.A = (*registerB ^ AF.A);
 
     //if the result is zero, set the Z flag
     if (AF.A == 0)
     {
-        AF.F |= 0b10000000;
+        SET(&AF.F, 7, 0);
     }
 }
 
@@ -2349,17 +2515,13 @@ void cpRegister(unsigned char* registerB, unsigned char cycles)
 void incRegister(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
-    //resetting N flag
-    AF.F &= 0b10110000;
+    //resetting N, Z and H flags
+    AF.F &= 0b00010000;
     
     //check if the lower nibble is 0b1111 to see if it will carry from bit 3. if it carries, set flag H;
     if ((*registerA & 0xF) == 0xF)
     {
         AF.F |= 0b00100000;
-    }
-    else 
-    {
-        AF.F &= 0b11010000;
     }
 
     //increments register
@@ -2368,10 +2530,6 @@ void incRegister(unsigned char* registerA, unsigned char cycles)
     if (*registerA == 0)
     {
         AF.F |= 0b10000000;
-    }
-    else 
-    {
-        AF.F &= 0b01110000;
     }
 }
 
@@ -2443,8 +2601,7 @@ void addRegister16Bit(unsigned short* registerA, unsigned short* registerB, unsi
 void swap(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
-    //reset N, H, C flags;
-    AF.F &= 0b10000000;
+    AF.F = 0;
     if (*registerA == 0)
     {
         //set Z flag
@@ -2452,8 +2609,6 @@ void swap(unsigned char* registerA, unsigned char cycles)
     }
     else 
     {
-        //reset Z flag
-        AF.F |= 0b10000000;
         //swap lower nibble with upper nibble
         *registerA = ((*registerA & 0x0F) << 4) | ((*registerA & 0xF0) >> 4);
     }
@@ -2463,7 +2618,7 @@ void rlcRegister(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
     //storing the seventh bit of registerA
-    char seventhBit = (*registerA & 0b10000000);
+    unsigned char seventhBit = (*registerA & 0b10000000);
     //copying the seventh bit of registerA to carry flag
     AF.F = ((seventhBit >> 3) | (AF.F & 0b11100000));
     //rotating registerA to the left
@@ -2471,24 +2626,35 @@ void rlcRegister(unsigned char* registerA, unsigned char cycles)
     //setting bit 0 to the previous seventh bit
     *registerA |= (seventhBit >> 7);
 
-    //resetting N and H flags
-    AF.F &= 0b10010000;
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
     //if result of rotation is 0, set Z flag
     if(*registerA == 0)
     {
         AF.F |= 0b10000000;
     }
-    else
-    {
-        AF.F &= 0b01110000;
-    }
+}
+
+void RLCA(unsigned char cycles)
+{
+    clockTiming(cycles);
+    //storing the seventh bit of registerA
+    unsigned char seventhBit = (AF.A & 0b10000000);
+    //copying the seventh bit of registerA to carry flag
+    AF.F = ((seventhBit >> 3) | (AF.F & 0b11100000));
+    //rotating registerA to the left
+    AF.A <<= 1;
+    //setting bit 0 to the previous seventh bit
+    AF.A |= (seventhBit >> 7);
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
 }
 
 void rlRegister(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
     //storing the carry flag
-    char CFlag = (AF.F & 0b00010000);
+    unsigned char CFlag = (AF.F & 0b00010000);
     //copying the seventh bit of registerA to carry flag
     AF.F = (((*registerA & 0b10000000) >> 3) | (AF.F & 0b11100000));
     //rotating registerA to the left
@@ -2497,23 +2663,35 @@ void rlRegister(unsigned char* registerA, unsigned char cycles)
     *registerA |= (CFlag >> 4);
 
     //resetting N and H flags
-    AF.F &= 0b10010000;
+    AF.F &= 0b00010000;
     //if result of rotation is 0, set Z flag
     if (*registerA == 0)
     {
         AF.F |= 0b10000000;
     }
-    else
-    {
-        AF.F &= 0b01110000;
-    }
+}
+
+void RLA(unsigned char cycles)
+{
+    clockTiming(cycles);
+    //storing the carry flag
+    unsigned char CFlag = (AF.F & 0b00010000);
+    //copying the seventh bit of registerA to carry flag
+    AF.F = (((AF.A & 0b10000000) >> 3) | (AF.F & 0b11100000));
+    //rotating registerA to the left
+    AF.A <<= 1;
+    //setting bit 0 to previous carry flag
+    AF.A |= (CFlag >> 4);
+
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
 }
 
 void rrcRegister(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
     //storing the zeroth bit of registerA
-    char zerothBit = ((*registerA & 0b00000001));
+    unsigned char zerothBit = (*registerA & 0b00000001);
     //copying the zeroth bit of registerA to carry flag
     AF.F = ((zerothBit << 4) | (AF.F & 0b11100000));
     //rotating registerA to the right
@@ -2522,23 +2700,35 @@ void rrcRegister(unsigned char* registerA, unsigned char cycles)
     *registerA |= (zerothBit << 7);
 
     //resetting N and H flags
-    AF.F &= 0b10010000;
+    AF.F &= 0b00010000;
     //if result of rotation is 0, set Z flag
     if (*registerA == 0)
     {
         AF.F |= 0b10000000;
     }
-    else
-    {
-        AF.F &= 0b01110000;
-    }
+}
+
+void RRCA(unsigned char cycles)
+{
+    clockTiming(cycles);
+    //storing the zeroth bit of registerA
+    unsigned char zerothBit = (AF.A & 0b00000001);
+    //copying the zeroth bit of registerA to carry flag
+    AF.F = ((zerothBit << 4) | (AF.F & 0b11100000));
+    //rotating registerA to the right
+    AF.A >>= 1;
+    //setting bit 7 to the previous zeroth bit
+    AF.A |= (zerothBit << 7);
+
+    //resetting N and H and Zflags
+    AF.F &= 0b00010000;
 }
 
 void rrRegister(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
     //storing the carry flag
-    char CFlag = (AF.F & 0b00010000);
+    unsigned char CFlag = (AF.F & 0b00010000);
     //copying the zeroth bit of registerA to carry flag
     AF.F = (((*registerA & 0b00000001) << 4) | (AF.F & 0b11100000));
     //rotating registerA to the right
@@ -2546,17 +2736,28 @@ void rrRegister(unsigned char* registerA, unsigned char cycles)
     //setting bit 7 to the previous carry flag
     *registerA |= (CFlag << 3);
 
-    //resetting N and H flags
-    AF.F &= 0b10010000;
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
     //if result of rotation is 0, set Z flag
     if (*registerA == 0)
     {
         AF.F |= 0b10000000;
     }
-    else
-    {
-        AF.F &= 0b01110000;
-    }
+}
+
+void RRA(unsigned char cycles)
+{
+    clockTiming(cycles);
+    //storing the carry flag
+    unsigned char CFlag = (AF.F & 0b00010000);
+    //copying the zeroth bit of registerA to carry flag
+    AF.F = (((AF.A & 0b00000001) << 4) | (AF.F & 0b11100000));
+    //rotating registerA to the right
+    AF.A >>= 1;
+    //setting bit 7 to the previous carry flag
+    AF.A |= (CFlag << 3);
+    //resetting N and H and Zflags
+    AF.F &= 0b00010000;
 }
 
 void SLA(unsigned char* registerA, unsigned char cycles)
@@ -2564,8 +2765,8 @@ void SLA(unsigned char* registerA, unsigned char cycles)
     clockTiming(cycles);
     //copying the seventh bit of registerA to carry flag
     AF.F = (((*registerA & 0b10000000) >> 3) | (AF.F & 0b11100000));
-    //resetting N and H flags
-    AF.F &= 0b10010000;
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
 
     //shifting bits to the left
     *registerA <<= 1;
@@ -2575,10 +2776,6 @@ void SLA(unsigned char* registerA, unsigned char cycles)
     {
         AF.F |= 0b10000000;
     }
-    else
-    {
-        AF.F &= 0b01110000;
-    }
 }
 
 void SRA(unsigned char* registerA, unsigned char cycles)
@@ -2587,8 +2784,8 @@ void SRA(unsigned char* registerA, unsigned char cycles)
     //copying the zeroth bit of registerA to carry flag
     AF.F = (((*registerA & 0b00000001) << 4) | (AF.F & 0b11100000));
 
-    //resetting N and H flags
-    AF.F &= 0b10010000;
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
 
     *registerA >>= 1;
 
@@ -2599,10 +2796,6 @@ void SRA(unsigned char* registerA, unsigned char cycles)
     {
         AF.F |= 0b10000000;
     }
-    else
-    {
-        AF.F &= 0b01110000;
-    }
 }
 
 void SRL(unsigned char* registerA, unsigned char cycles)
@@ -2610,16 +2803,12 @@ void SRL(unsigned char* registerA, unsigned char cycles)
     clockTiming(cycles);
     //copying the zeroth bit of registerA to carry flag
     AF.F = (((*registerA & 0b00000001) << 4) | (AF.F & 0b11100000));
-    //resetting N and H flags
-    AF.F &= 0b10010000;
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
     *registerA >>= 1;
     if (*registerA == 0)
     {
         AF.F |= 0b10000000;
-    }
-    else
-    {
-        AF.F &= 0b01110000;
     }
 }
 
@@ -2629,7 +2818,7 @@ void BIT(unsigned char* registerA, unsigned char bit, unsigned char cycles)
     //getting the value of b, b is the position of the bit that needs to be tested, b = 0 - 7;
 
     //if the value of bit is 0, set Z flag
-    if ((*registerA & (0b00000001) << bit) == 0)
+    if (!testBit(*registerA, bit))
     {
         AF.F |= 0b10000000;
     }
@@ -2640,6 +2829,7 @@ void BIT(unsigned char* registerA, unsigned char bit, unsigned char cycles)
 
     //reset N flag and set H flag
     AF.F &= 0b10110000;
+
     AF.F |= 0b00100000;
 }
 
@@ -2703,11 +2893,18 @@ void JP(bool condition, unsigned char cycles)
     if (condition)
     {
         clockTiming(4);
-        char LowNibble = memory[pc + 1];
-        char HighNibble = memory[pc + 2];
+        pc++;
+        char LowNibble = memory[pc];
+        pc++;
+        char HighNibble = memory[pc];
+        //printf("Going to adress %01hX%01hX, from adress %02hX \n", HighNibble, LowNibble, pc-2);
         pc = ((LowNibble & 0xFF) | (HighNibble << 8)) & 0xFFFF;
         //decreasing pc counter because after the execution it will automatically increase and when the code jumps we cant increase.
         pc--;
+    }
+    else
+    {
+        pc += 2;
     }
 }
 
@@ -2737,6 +2934,10 @@ void CALL(bool condition, unsigned char cycles)
         memory[sp] = ((pc + 3)& 0xFF);
         JP(true, 8);
     }
+    else
+    {
+        pc += 2;
+    }
 }
 
 void RET(bool condition, unsigned char cycles)
@@ -2749,6 +2950,7 @@ void RET(bool condition, unsigned char cycles)
         sp++;
         char HighNibble = memory[sp];
         sp++;
+        //printf("returning to adress %01hX%01hX, from adress %02hX\n", HighNibble, LowNibble, pc);
         pc = (HighNibble << 8);
         pc |= (LowNibble & 0xFF);
         //pc = ((LowNibble & 0xFF) | (HighNibble << 8)) & 0xFFFF;
@@ -2779,6 +2981,16 @@ void PUSH(unsigned char* highByte, unsigned char* lowByte)
     clockTiming(16);
 }
 
+void PUSHAF()
+{
+    sp--;
+    writeInMemory(sp, AF.A);
+    unsigned char flagByte = (AF.F & 0b11110000);
+    sp--;
+    writeInMemory(sp, flagByte);
+    clockTiming(16);
+}
+
 void POP(unsigned char* highByte, unsigned char* lowByte)
 {
     *lowByte = memory[sp];
@@ -2786,7 +2998,16 @@ void POP(unsigned char* highByte, unsigned char* lowByte)
     *highByte = memory[sp];
     sp++;
     clockTiming(12);
-    //condition is sp == dff9
+}
+
+void POPAF()
+{
+    AF.F = memory[sp];
+    AF.F &= 0b11110000;
+    sp++;
+    AF.A = memory[sp];
+    sp++;
+    clockTiming(12);
 }
 
 void setupGraphics()
@@ -2826,6 +3047,8 @@ void drawGraphics()
     //the position of memory of the tile number XX is: 0x8XX0;
     char tileNumber = 0;
     short colorOfPixel = 0;
+    char MSB = 0;//most significant bit
+    char LSB = 0;//less significant bit
     char lineOfTile[2];
     //in the BG map tile numbers every byte contains the number of the tile (position of tile in memory) to be displayed in a 32*32 grid, 
     //every tile hax 8*8 pixels, totaling 256*256 pixels that is drawn to the screen.
@@ -2850,31 +3073,40 @@ void drawGraphics()
                 lineOfTile[1] = memory[memoryPosition];
                 for (int xPixel = 0; xPixel < 8; xPixel++)
                 {
-                    colorOfPixel = (lineOfTile[0] & (0b00000001 << xPixel)) + (lineOfTile[1] & (0b00000001 << xPixel));
-                    colorOfPixel >>= xPixel;
-                    //printf("%i", colorOfPixel);
-                    switch (colorOfPixel)
+                    MSB = (lineOfTile[1] & (0b10000000 >>  xPixel));
+                    MSB >>= (7 - xPixel);
+                    LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+                    LSB >>= (7 - xPixel);
+                    switch (MSB)
                     {
-                    case 0b00:
-                        //white color
-                        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                    case 0:
+                        switch (LSB)
+                        {
+                        case 0:
+                            //white color
+                            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                            break;
+                        case 1:
+                            //blue-green color
+                            SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
+                            break;
+                        }
                         break;
-                    case 0b01:
-                        //blue-green color
-                        SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                        break;
-                    case 0b10:
-                        //light green color
-                        SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                        break;
-                    case 0b11:
-                        //dark green color
-                        SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                        break;
-                    default:
+                    case 1:
+                        switch (LSB)
+                        {
+                        case 0:
+                            //light green color
+                            SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
+                            break;
+                        case 1:
+                            //dark green color
+                            SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
+                            break;
+                        }
                         break;
                     }
-                    SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), ((y * 8) + yPixel));
+                    SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), ((y * 8) +  yPixel));
                 }
                 //printf("\n");
             }  
@@ -3088,7 +3320,7 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
     {
         //this memory location is read only
     }
-    else if (memoryLocation >= 0xFEA0 && memoryLocation <= 0xFEFF)
+    else if ((memoryLocation >= 0xFEA0) && (memoryLocation <= 0xFEFF))
     {
         //this memory location is not usable 
     }
