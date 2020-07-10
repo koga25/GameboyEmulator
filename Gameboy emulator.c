@@ -203,6 +203,7 @@ void setInterruptAddress(unsigned char bit);
 void requestInterrupt(unsigned char bit);
 bool testBit(unsigned char data, unsigned char bit);
 void dmaTransfer(unsigned char data);
+void doHalt();
 
 int main(int argc, char* argv[])
 {
@@ -1488,8 +1489,8 @@ void emulateCycle()
             break;
         }
         case 0x76:
-            
-            printf("adress of halt is: %04hX\n", pc);
+            halt = true;
+            doHalt();
             break;
         case 0xCB:
             pc++;
@@ -3293,9 +3294,9 @@ void setInterruptAddress(unsigned char bit)
 {
     masterInterrupt = false;
     RES(&memory[IF], bit, 0);
-    unsigned char highByte = ((pc & 0xFF00) >> 8);
+    unsigned char highByte = (pc >> 8);
     unsigned char lowByte = (pc & 0xFF);
-    PUSH(&lowByte, &highByte);
+    PUSH(&highByte, &lowByte);
     switch (bit)
     {
     case 0:
@@ -3407,6 +3408,48 @@ void dmaTransfer(unsigned char data)
     for (int x = 0; x < 0xA0; x++)
     {
         writeInMemory(0xFE00 + x, memory[dataAdress + x]);
+    }
+}
+
+void doHalt()
+{
+    //halt has 2 possible interactions with the IME, if it is true then HALT is executed normally, cpu will stop executing instructions until an
+    //interrupt is enabled and requested. When that happens the adress next to the HALT instruction is pushed onto the stack and the CPU will jump
+    //to the interrupt adress. The IF flag of the interrupt is reset.
+    if (masterInterrupt)
+    {
+        if ((memory[IE] & memory[IF] & 0x1F) == 0)
+        {
+            while ((memory[IE] & memory[IF] & 0x1F) == 0)
+            {
+                //increasing clock cycle by 4 until an interrupt is made;
+                clockTiming(4);
+            }
+        }
+
+    }
+    //if IME is false, it tests for 2 possible interactions. 
+    //(IE & IF & 0x1F) = 0, it waits for an interrupt but doesnt jump or resets the flag, it just continues to the next instruction.
+    //(IE & IF & 0x1F) != 0 HALT bug, the cpu fails to increase pc when executing the next instruction so it will execute twice. IF flags aren't cleared
+    else
+    {
+        if ((memory[IE] & memory[IF] & 0x1F) == 0)
+        {
+            while ((memory[IE] & memory[IF] & 0x1F) == 0)
+            {
+                //increasing clock cycle by 4 until an interrupt is made;
+                clockTiming(4);
+            }
+        }
+        else
+        {
+            //gets the instrunction after the HALT.
+            pc++;
+            //executes the instruction and increases pc by 1
+            emulateCycle();
+            //decreases by 2 because when HALT instrunction executes it will increment pc by 1.
+            pc-=2;
+        }
     }
 }
 
