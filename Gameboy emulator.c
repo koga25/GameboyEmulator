@@ -117,7 +117,7 @@ unsigned char shownScreen[160][144];
 unsigned char wholeScreen[256][256];
 //scanlineCounter uses a 16 bit variable to represent 456 clocks, so when it becomes lower than 0 it will wrap to 456;
 //everytime it wraps around we update the LY register ($ff44) by 1, the range of the LY register is 0-153;
-int scanlineCounter = 0;
+int scanlineCounter = 0x1c8;
 //cpu does 4194304 cycles in a second and it renders in 60FPS.
 const int maxCycleBeforeRender = CLOCKSPEED / 60;
 //how many cycles the cpu did in 1 milisecond
@@ -198,6 +198,8 @@ void readMemory(unsigned short memoryLocation);
 void setClockFrequency();
 void setLCDSTAT();
 void drawScanLine();
+void renderTiles();
+void renderSprites();
 void doInterrupts();
 void setInterruptAddress(unsigned char bit);
 void requestInterrupt(unsigned char bit);
@@ -221,12 +223,8 @@ int main(int argc, char* argv[])
         }   
         //clock cycle timing
         //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
-        if (memory[pc] == 0x18)
-        {
-            drawGraphics();
-        }
+        //drawGraphics();
     }
-    SDL_Delay(5000);
     //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
 }
 
@@ -236,11 +234,10 @@ void initialize()
     pc = PCStart;
 
     //initializing registers
-    /*AF.AF = 0x01;
-    AF.F = 0xB0;
+    AF.AF = 0x01B0;
     BC.BC = 0x0013;
     DE.DE = 0x00D8;
-    HL.HL = 0x014D;*/
+    HL.HL = 0x014D;
     memory[0xFF05] = 0x00; //TIMA
     memory[0xFF06] = 0x00; //TMA
     memory[0xFF07] = 0x00; //TAC
@@ -272,84 +269,14 @@ void initialize()
     memory[0xFF4A] = 0x00; //WY
     memory[0xFF4B] = 0x00; //WX
     memory[0xFFFF] = 0x00; //IE
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    //register of ld 06 test
-    AF.AF = 0x1180;
-    BC.BC = 0;
-    DE.DE = 0xFF56;
-    HL.HL = 0x000D;
-    scanlineCounter = 288;
-    memory[LCDC] = 0x91;
-    memory[0xFF44] = 0x90; //LY
-    memory[0xFF47] = 0xFC; // BGP
-    memory[STAT] = 0x81; //LCD STAT
-    memory[0xFF02] = 0x7C; //SC
-    memory[0xFF04] = 0x1E; //DIV
-    memory[0xFF07] = 0xF8; //TAC
-    memory[0xFF0F] = 0xE1; //SC
-    memory[0xFF70] = 0xF8; // SVBK
-    memory[0xFF4F] = 0xFE; //VBK
-    memory[0xFF4D] = 0x7E; //KEY1
-    memory[0xFF01] = 0; // SB
-    memory[0xFF02] = 0x7C; //SC
-    memory[0xFF10] = 0x80; //ENT1
-    memory[0xFF11] = 0xBF; //LEN1
-    memory[0xFF12] = 0xF3; //ENV1
-    memory[0xFF13] = 0xC1; //FRQ1
-    memory[0xFF14] = 0xBF; //KIK1
-    memory[0xFF15] = 0xFF; //N/A
-    memory[0xFF16] = 0x3F; //LEN2
-    memory[0xFF17] = 0; //ENV2
-    memory[0xFF18] = 0; //FRQ2
-    memory[0xFF19] = 0xB8; //KIK2
-    memory[0xFF1A] = 0x7F; //ON_3
-    memory[0xFF1B] = 0xFF; //LEN3
-    memory[0xFF1C] = 0x9F; //ENV3
-    memory[0xFF1D] = 0; //FRQ3
-    memory[0xFF1E] = 0xB8; //KIK3
-    memory[0xFF1F] = 0xFF; //N/A
-    memory[0xFF20] = 0xFF; //LEN4
-    memory[0xFF21] = 0; //ENV4
-    memory[0xFF22] = 0; //FRQ4
-    memory[0xFF23] = 0xBF; //KIK4
-    memory[0xFF24] = 0x77; //VOL
-    memory[0xFF25] = 0xF3; //L/R
-    memory[0xFF26] = 0xF1; //ON
-    memory[0xFF51] = 0xFF; //src1
-    memory[0xFF52] = 0xFF; //src2
-    memory[0xFF53] = 0xFF; //dest1
-    memory[0xFF54] = 0xFF; //dest2
-    memory[0xFF4F] = 0; //VRAM gbc bank
-    memory[0xFF70] = 1; //WRAM gbc bank
-    memory[0xFF68] = 0xC0; //BCPS - GBC pal
-    memory[0xFF69] = 0xFF; //BCPD - GBC pal
-    memory[0xFF6A] = 0xC1; //OCPS - GBC pal
-    memory[0xFF6B] = 0x46; //OCPD - GBC pal
-    //
-    memory[0xFF80] = 0xCE;
-    memory[0xFF81] = 0xED;
-    memory[0xFF82] = 0x66;
-    memory[0xFF83] = 0x66;
-    memory[0xFF84] = 0xCC;
-    memory[0xFF85] = 0x0D;
-    memory[0xFF87] = 0x0B;
-    memory[0xFF88] = 0x03;
-    memory[0xFF89] = 0x73;
-    memory[0xFF8B] = 0x83;
-    memory[0xFF8D] = 0x0C;
-    memory[0xFF8F] = 0x0D;
-    //
-    memory[IF] = 0xE1;
-    memory[IE] = 0;
-    //starting stack
     sp = StackStart;
 }
 
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\02-interrupts.gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Dr. Mario (W) (V1.1).gb", "rb");
     if (file == NULL) {
         printf("File not found");
         exit(EXIT_FAILURE);
@@ -394,6 +321,38 @@ void loadGame(char* gameName)
     }
 }
 
+void setupGraphics()
+{
+    //SDL_INIT_EVERYTHING
+    if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_TIMER) == 0) {
+        printf("entering here\n");
+        window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 512, 512, SDL_WINDOW_SHOWN);
+        //window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_SHOWN);
+        renderer = SDL_CreateRenderer(window, -1, 0);
+        if (window != NULL)
+        {
+            printf("window created\n");
+        }
+        if (renderer != NULL)
+        {
+            printf("renderer created\n");
+        }
+        SDL_RenderSetLogicalSize(renderer, 256, 256);
+        //SDL_RenderSetLogicalSize(renderer, 160, 144);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+        SDL_RenderClear(renderer);
+        SDL_RenderPresent(renderer);
+        isRunning = true;
+
+
+    }
+    else
+    {
+
+        isRunning = false;
+    }
+}
+
 void emulateCycle()
 {
     //C01C, C088, cc50, C913, c7f9(the PC that it writes the first line in the screen), c24f
@@ -409,6 +368,13 @@ void emulateCycle()
     //the flags are different. after fixing the instructions the position DFF9 is differente (FF00 mine) (0000 BGB)
     //AF.AF == 0x00f0 && BC.BC == 0x0001 && DE.DE == 0x1f7f && pc == 0xDEF8
     //pc == 0xDEF8 -> this is where GBG tests the opcodes.
+    //pc == 0x0215
+    //pc == 0x20A3
+    //registers that isnt equal -> ff14, ff19, ff23, ff10
+    //pc == 0x294
+    //pc == 0x0434
+    //pc 0x231c -> register FF00 wrong value -> ff00 == joypad
+    //pc == 0x358
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
     //printf("checking opcode: [%X]\n", opcode);
@@ -3011,109 +2977,103 @@ void POPAF()
     clockTiming(12);
 }
 
-void setupGraphics()
-{
-    //SDL_INIT_EVERYTHING
-    if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_TIMER) == 0) {
-        printf("entering here\n");
-        window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 512, 512, SDL_WINDOW_SHOWN);
-        renderer = SDL_CreateRenderer(window, -1, 0);
-        if (window != NULL)
-        {
-            printf("window created\n");
-        }
-        if (renderer != NULL)
-        {
-            printf("renderer created\n");
-        }
-        //SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-        //SDL_RenderSetLogicalSize(renderer, 320, 240);
-        SDL_RenderSetLogicalSize(renderer, 256, 256);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
-        SDL_RenderClear(renderer);
-        SDL_RenderPresent(renderer);
-        isRunning = true;
-
-
-    }
-    else
-    {
-
-        isRunning = false;
-    }
-}
-
 void drawGraphics()
 {
-    //the position of memory of the tile number XX is: 0x8XX0;
-    char tileNumber = 0;
-    short colorOfPixel = 0;
-    char MSB = 0;//most significant bit
-    char LSB = 0;//less significant bit
-    char lineOfTile[2];
-    //in the BG map tile numbers every byte contains the number of the tile (position of tile in memory) to be displayed in a 32*32 grid, 
-    //every tile hax 8*8 pixels, totaling 256*256 pixels that is drawn to the screen.
-    for (int y = 0; y < 32; y++)
+
+    if (memory[LY] < 144)
     {
-        //printf("%x", (0x9800) + (32 * y));
-        for (int x = 0; x < 32; x++)
+        unsigned short locationOfTileData = 0;
+        //checking the position of memory the BG tile data is located, if testBit is true, BG = 0x8000-0x8FFF, else, 0x8800-0x97FF
+        //this will determine where to search for the data of the tile number that needs to be displayed.
+        if (testBit(memory[LCDC], 4))
         {
-            
-            tileNumber = memory[(0x9800 + x) + (32 * y)];
-            //printf("tileNumber: %X   lineOfTile[0]: ", tileNumber);
-            
-            //for every tile there is 16 bytes, for 2 bytes there is 8 pixels to be drawn. 
-            for (int yPixel = 0; yPixel < 8; yPixel++)
-            {
-                //getting first byte of the line
-                unsigned short memoryPosition = 0x8000 + (tileNumber * 16) + (2 * yPixel);
-                lineOfTile[0] = memory[memoryPosition];
-                //printf("%X", 0x8000 + (tileNumber * 10) + (2 * yPixel));
-                //getting second byte of the line
-                memoryPosition = 0x8000 + (tileNumber * 16) + (2 * yPixel) + 1;
-                lineOfTile[1] = memory[memoryPosition];
-                for (int xPixel = 0; xPixel < 8; xPixel++)
-                {
-                    MSB = (lineOfTile[1] & (0b10000000 >>  xPixel));
-                    MSB >>= (7 - xPixel);
-                    LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
-                    LSB >>= (7 - xPixel);
-                    switch (MSB)
-                    {
-                    case 0:
-                        switch (LSB)
-                        {
-                        case 0:
-                            //white color
-                            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                            break;
-                        case 1:
-                            //blue-green color
-                            SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                            break;
-                        }
-                        break;
-                    case 1:
-                        switch (LSB)
-                        {
-                        case 0:
-                            //light green color
-                            SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                            break;
-                        case 1:
-                            //dark green color
-                            SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                            break;
-                        }
-                        break;
-                    }
-                    SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), ((y * 8) +  yPixel));
-                }
-                //printf("\n");
-            }  
+            locationOfTileData = 0x8000;
         }
+        else
+        {
+            locationOfTileData = 0x8800;
+        }
+
+        unsigned short locationOfTileNumber = 0;
+        //checking the position of memory the BG Tile Map Display is located, if testBit is true, BG = 9C00-9FFF, else, 9800-9BFF
+        //this will determine where to search for the number of the tile that we will need to search.
+        if (testBit(memory[LCDC], 3))
+        {
+            locationOfTileNumber = 0x9C00;
+        }
+        else
+        {
+            locationOfTileNumber = 0x9800;
+        }
+        //the position of memory of the tile number XX is: 0x8XX0;
+        char tileNumber = 0;
+        char MSB = 0;//most significant bit
+        char LSB = 0;//less significant bit
+        char lineOfTile[2];
+        //in the BG map tile numbers every byte contains the number of the tile (position of tile in memory) to be displayed in a 32*32 grid, 
+        //every tile hax 8*8 pixels, totaling 256*256 pixels that is drawn to the screen.
+        for (int y = 0; y < 32; y++)
+        {
+            //printf("%x", (0x9800) + (32 * y));
+            for (int x = 0; x < 32; x++)
+            {
+
+                tileNumber = memory[(locationOfTileNumber + x) + (32 * y)];
+                //printf("tileNumber: %X   lineOfTile[0]: ", tileNumber);
+
+                //for every tile there is 16 bytes, for 2 bytes there is 8 pixels to be drawn. 
+                for (int yPixel = 0; yPixel < 8; yPixel++)
+                {
+                    //getting first byte of the line
+                    unsigned short memoryPosition = locationOfTileData + (tileNumber * 16) + (2 * yPixel);
+                    lineOfTile[0] = memory[memoryPosition];
+                    //printf("%X", 0x8000 + (tileNumber * 10) + (2 * yPixel));
+                    //getting second byte of the line
+                    memoryPosition = locationOfTileData + (tileNumber * 16) + (2 * yPixel) + 1;
+                    lineOfTile[1] = memory[memoryPosition];
+                    for (int xPixel = 0; xPixel < 8; xPixel++)
+                    {
+                        MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
+                        MSB >>= (7 - xPixel);
+                        LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+                        LSB >>= (7 - xPixel);
+                        switch (MSB)
+                        {
+                        case 0:
+                            switch (LSB)
+                            {
+                            case 0:
+                                //white color
+                                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                                break;
+                            case 1:
+                                //blue-green color
+                                SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
+                                break;
+                            }
+                            break;
+                        case 1:
+                            switch (LSB)
+                            {
+                            case 0:
+                                //light green color
+                                SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
+                                break;
+                            case 1:
+                                //dark green color
+                                SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
+                                break;
+                            }
+                            break;
+                        }
+                        SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), ((y * 8) + yPixel));
+                    }
+                    //printf("\n");
+                }
+            }
+        }
+        SDL_RenderPresent(renderer);
     }
-    SDL_RenderPresent(renderer);
 }
 
 void clockTiming(unsigned char cycles)
@@ -3144,12 +3104,144 @@ void clockTiming(unsigned char cycles)
                 {
                     drawScanLine();
                 }
+                
             }
         }
     }
 }
 
 void drawScanLine()
+{
+    if (testBit(memory[LCDC], 0))
+    {
+        renderTiles();
+    }
+
+    if (testBit(memory[LCDC], 1))
+    {
+        renderSprites();
+    }
+}
+
+void renderTiles()
+{
+    unsigned short locationOfTileData = 0;
+    unsigned char offset = 0;
+    bool unsign = true;
+    //checking the position of memory the BG tile data is located, if testBit is true, BG = 0x8000-0x8FFF, else, 0x8800-0x97FF
+    //this will determine where to search for the data of the tile number that needs to be displayed.
+    if(testBit(memory[LCDC], 4))    
+    {
+        locationOfTileData = 0x8000;
+    }
+    else
+    {
+        offset = 128;
+        unsign = false;
+        locationOfTileData = 0x8800;
+    }
+
+    unsigned short locationOfTileNumber = 0;
+    //checking the position of memory the BG Tile Map Display is located, if testBit is true, BG = 9C00-9FFF, else, 9800-9BFF
+    //this will determine where to search for the number of the tile that we will need to search.
+    if (testBit(memory[LCDC], 3))
+    {
+        locationOfTileNumber = 0x9C00;
+    }
+    else
+    {
+        
+        locationOfTileNumber = 0x9800;
+    }
+    //the position of memory of the tile number XX is: 0x8XX0;
+    unsigned char tileNumber = 0;
+    unsigned char MSB = 0;//most significant bit
+    unsigned char LSB = 0;//less significant bit
+    unsigned char lineOfTile[2];
+    unsigned short memoryPosition;
+    //in the BG map tile numbers every byte contains the number of the tile (position of tile in memory) to be displayed in a 32*32 grid, 
+    //every tile hax 8*8 pixels, totaling 256*256 pixels that is drawn to the screen.
+    //printf("%x", (0x9800) + (32 * y));
+    for (int x = 0; x < 20; x++)
+    {
+        if (unsign)
+        {
+            tileNumber = memory[((locationOfTileNumber)+x) + ((memory[LY] / 8) * 32)];
+        }
+        else
+        {
+            tileNumber = (signed char) memory[((locationOfTileNumber)+x) + ((memory[LY] / 8) * 32)];
+        }
+        //printf("tileNumber: %X   lineOfTile[0]: ", tileNumber);
+
+        //for every tile there is 16 bytes, for 2 bytes there is 8 pixels to be drawn. 
+        //getting first byte of the line
+        unsigned short tileLocation = locationOfTileData;
+
+        if (unsign)
+        {
+            tileLocation += tileNumber * 16;
+        }
+        else
+        {
+            tileNumber += 128;
+            tileLocation += tileNumber * 16;
+        }
+        memoryPosition =  tileLocation + ((memory[LY] % 8) * 2);
+        lineOfTile[0] = memory[memoryPosition];
+        //printf("%X", 0x8000 + (tileNumber * 10) + (2 * yPixel));
+        //getting second byte of the line
+        memoryPosition = tileLocation + 1 + ((memory[LY] % 8) * 2);
+        lineOfTile[1] = memory[memoryPosition];
+        for (int xPixel = 0; xPixel < 8; xPixel++)
+        {
+            MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
+            MSB >>= (7 - xPixel);
+            LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+            LSB >>= (7 - xPixel);
+            switch (MSB)
+            {
+            case 0:
+                switch (LSB)
+                {
+                case 0:
+                    //white color
+                    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                    break;
+                case 1:
+                    //blue-green color
+                    SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
+                    break;
+                }
+                break;
+            case 1:
+                switch (LSB)
+                {
+                case 0:
+                    //light green color
+                    SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
+                    break;
+                case 1:
+                    //dark green color
+                    SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
+                    break;
+                }
+                break;
+            }
+            SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), memory[LY]);
+            SDL_RenderPresent(renderer);
+        }
+        //printf("\n");
+    }
+}
+
+short BGSelectMode(unsigned char *offset)
+{
+    /*if (testBit(memory[LCDC], 4))
+    */
+}
+
+void renderSprites()
 {
 
 }
@@ -3370,6 +3462,10 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
 void readMemory(unsigned short memoryLocation)
 {
 
+    if (memoryLocation == 0xFF00)
+    {
+        
+    }
 }
 
 void setClockFrequency()
