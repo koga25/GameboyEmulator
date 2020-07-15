@@ -129,10 +129,11 @@ int divCounter = CLOCKSPEED / FREQUENCY_11;
 //the cycles the divider register was on until now
 int dividerRegisterCycles = 0;
 
-//interrupts
+//interrupts and joypad
 bool masterInterrupt = false; //Interrupt Master Enable Flag - IME
 //when the cpu executes the enable interrupt instruction it will only take effect in the next instruction we need a delay to activate the IME
 bool delayMasterInterrupt = false; 
+unsigned char joypadKeys = 0xFF;
 
 //HALT
 bool halt = false;
@@ -146,7 +147,6 @@ bool isRunning;
 //////////////////////////////////////////////////FUNCTIONS//////////////////////////////////////////////////////////////////////////////////////////////
 void print_binary(int number);
 //sdl
-void drawGraphics();
 void setupGraphics();
 //gameboy
 void initialize();
@@ -194,7 +194,7 @@ void POPAF();
 void clockTiming(unsigned char cycles);
 void updateTimers(unsigned char cycles);
 void writeInMemory(unsigned short memoryLocation, unsigned char registerA);
-void readMemory(unsigned short memoryLocation);
+unsigned char readMemory(unsigned short memoryLocation);
 void setClockFrequency();
 void setLCDSTAT();
 void drawScanLine();
@@ -206,6 +206,10 @@ void requestInterrupt(unsigned char bit);
 bool testBit(unsigned char data, unsigned char bit);
 void dmaTransfer(unsigned char data);
 void doHalt();
+void handleEvents();
+void makeJoypadInterrupt(bool directional, unsigned char bit);
+void joypad();
+void quitGame();
 
 int main(int argc, char* argv[])
 {
@@ -213,18 +217,17 @@ int main(int argc, char* argv[])
     loadGame("oi");
     setupGraphics();
     
-    for (;;)
+    while (isRunning == true)
     {
         cyclesBeforeLCDRender = 0;
         while (cyclesBeforeLCDRender < maxCycleBeforeRender)
         {
+            handleEvents();
             emulateCycle();
             doInterrupts();
-        }   
-        //clock cycle timing
-        //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
-        //drawGraphics();
+        }  
     }
+    void quitGame();
     //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
 }
 
@@ -238,6 +241,7 @@ void initialize()
     BC.BC = 0x0013;
     DE.DE = 0x00D8;
     HL.HL = 0x014D;
+    memory[0xFF00] = 0xCF; //JOYPAD
     memory[0xFF05] = 0x00; //TIMA
     memory[0xFF06] = 0x00; //TMA
     memory[0xFF07] = 0x00; //TAC
@@ -276,7 +280,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Dr. Mario (W) (V1.1).gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Tetris (W) (V1.0) [!].gb", "rb");
     if (file == NULL) {
         printf("File not found");
         exit(EXIT_FAILURE);
@@ -326,7 +330,7 @@ void setupGraphics()
     //SDL_INIT_EVERYTHING
     if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_TIMER) == 0) {
         printf("entering here\n");
-        window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 512, 512, SDL_WINDOW_SHOWN);
+        window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_SHOWN);
         //window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_SHOWN);
         renderer = SDL_CreateRenderer(window, -1, 0);
         if (window != NULL)
@@ -337,7 +341,7 @@ void setupGraphics()
         {
             printf("renderer created\n");
         }
-        SDL_RenderSetLogicalSize(renderer, 256, 256);
+        SDL_RenderSetLogicalSize(renderer, 160, 144);
         //SDL_RenderSetLogicalSize(renderer, 160, 144);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
         SDL_RenderClear(renderer);
@@ -377,7 +381,7 @@ void emulateCycle()
     //pc == 0x358
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
-    //printf("checking opcode: [%X]\n", opcode);
+    //printf("checking opcode: [%X],    pc: [%X]\n", opcode, pc);
     switch (opcode & 0xFF)
     {
         case 0x10:
@@ -389,32 +393,32 @@ void emulateCycle()
             break;
         case 0x06:
             pc++;
-            BC.B = memory[pc];
+            BC.B = readMemory(pc);
             clockTiming(8);
             break;
         case 0x0E:
             pc++;
-            BC.C = memory[pc];
+            BC.C = readMemory(pc);
             clockTiming(8);
             break;
         case 0x16:
             pc++;
-            DE.D = memory[pc];
+            DE.D = readMemory(pc);
             clockTiming(8);
             break;
         case 0x1E:
             pc++;
-            DE.E = memory[pc];
+            DE.E = readMemory(pc);
             clockTiming(8);
             break;
         case 0x26:
             pc++;
-            HL.H = memory[pc];
+            HL.H = readMemory(pc);
             clockTiming(8);
             break;
         case 0x2E:
             pc++;
-            HL.L = memory[pc];
+            HL.L = readMemory(pc);
             clockTiming(8);
             break;
         case 0x7F:
@@ -446,7 +450,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x7E:
-            AF.A = memory[HL.HL];
+            AF.A = readMemory(HL.HL);
             clockTiming(8);
             break;
         case 0x40:
@@ -474,7 +478,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x46:
-            BC.B = memory[HL.HL];
+            BC.B = readMemory(HL.HL);
             clockTiming(8);
             break;
         case 0x48:
@@ -502,7 +506,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x4E:
-            BC.C = memory[HL.HL];
+            BC.C = readMemory(HL.HL);
             clockTiming(8);
             break;
         case 0x50:
@@ -530,7 +534,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x56:
-            DE.D = memory[HL.HL];
+            DE.D = readMemory(HL.HL);
             clockTiming(8);
             break;
         case 0x58:
@@ -558,7 +562,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x5E:
-            DE.E = memory[HL.HL];
+            DE.E = readMemory(HL.HL);
             clockTiming(8);
             break;
         case 0x60:
@@ -586,7 +590,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x66:
-            HL.H = memory[HL.HL];
+            HL.H = readMemory(HL.HL);
             clockTiming(8);
             break;
         case 0x68:
@@ -614,7 +618,7 @@ void emulateCycle()
             clockTiming(4);
             break;
         case 0x6E:
-            HL.L = memory[HL.HL];
+            HL.L = readMemory(HL.HL);
             clockTiming(8);
             break;
         case 0x70:
@@ -643,32 +647,32 @@ void emulateCycle()
             break;
         case 0x36:
             pc++;
-            writeInMemory(HL.HL, memory[pc]);
+            writeInMemory(HL.HL, readMemory(pc));
             clockTiming(12);
             break;
         case 0x0A:
-            AF.A = memory[BC.BC];
+            AF.A = readMemory(BC.BC);
             clockTiming(8);
             break;
         case 0x1A:
-            AF.A = memory[DE.DE];
+            AF.A = readMemory(DE.DE);
             clockTiming(8);
             break;
         case 0xFA:
         {
             pc++;
-            unsigned char LowerNibble = memory[pc];
+            unsigned char LowerNibble = readMemory(pc);
             pc++;
-            unsigned char HighNibble = memory[pc];
+            unsigned char HighNibble = readMemory(pc);
             unsigned short memoryLocation = (HighNibble << 8);
             memoryLocation |= LowerNibble;
-            AF.A = memory[memoryLocation];
+            AF.A = readMemory(memoryLocation);;
             clockTiming(16);
             break;
         } 
         case 0x3E:
             pc++;
-            AF.A = memory[pc];
+            AF.A = readMemory(pc);
             clockTiming(8);
             break;
         case 0x47:
@@ -710,9 +714,9 @@ void emulateCycle()
         case 0xEA:
         {
             pc++;
-            unsigned char LowerNibble = memory[pc];
+            unsigned char LowerNibble = readMemory(pc);
             pc++;
-            unsigned char HighNibble = memory[pc];
+            unsigned char HighNibble = readMemory(pc);
             unsigned short memoryLocation = (HighNibble << 8);
             memoryLocation |= LowerNibble;
             writeInMemory(memoryLocation, AF.A);
@@ -722,7 +726,7 @@ void emulateCycle()
         case 0xF2:
         {
             unsigned short memoryLocation = 0xFF00 + BC.C;
-            AF.A = memory[memoryLocation];
+            AF.A = readMemory(memoryLocation);
             clockTiming(8);
             break;
         }
@@ -734,7 +738,7 @@ void emulateCycle()
             break;
         }
         case 0x3A:
-            AF.A = memory[HL.HL];
+            AF.A = readMemory(HL.HL);
             HL.HL--;
             clockTiming(8);
             break;
@@ -744,7 +748,7 @@ void emulateCycle()
             clockTiming(8);
             break;
         case 0x2A:
-            AF.A = memory[HL.HL];
+            AF.A = readMemory(HL.HL);
             HL.HL++;
             clockTiming(8);
             break;
@@ -756,7 +760,7 @@ void emulateCycle()
         case 0xE0:
         {
             pc++;
-            unsigned short memoryLocation = 0xFF00 + memory[pc];
+            unsigned short memoryLocation = 0xFF00 + readMemory(pc);;
             writeInMemory(memoryLocation, AF.A);
             clockTiming(12);
             break;
@@ -765,37 +769,37 @@ void emulateCycle()
         {
             pc++;
             unsigned short memoryLocation = 0xFF00 + memory[pc];
-            AF.A = memory[memoryLocation];
+            AF.A = readMemory(memoryLocation);
             clockTiming(12);
             break;
         }
         case 0x01:
             pc++;
-            BC.C = memory[pc];
+            BC.C = readMemory(pc);
             pc++;
-            BC.B = memory[pc];
+            BC.B = readMemory(pc);
             clockTiming(12);
             break;
         case 0x11:
             pc++;
-            DE.E = memory[pc];
+            DE.E = readMemory(pc);
             pc++;
-            DE.D = memory[pc];
+            DE.D = readMemory(pc);
             clockTiming(12);
             break;
         case 0x21:
             pc++;
-            HL.L = memory[pc];
+            HL.L = readMemory(pc);
             pc++;
-            HL.H = memory[pc];
+            HL.H = readMemory(pc);
             clockTiming(12);
             break;
         case 0x31:
         {
             pc++;
-            unsigned char LowerNibble = memory[pc];
+            unsigned char LowerNibble = readMemory(pc);
             pc++;
-            unsigned char HighNibble = memory[pc];
+            unsigned char HighNibble = readMemory(pc);
             unsigned short memoryLocation = (HighNibble << 8);
             memoryLocation |= LowerNibble;
             sp = memoryLocation;
@@ -812,7 +816,7 @@ void emulateCycle()
             AF.F = 0;
             //getting immediate signed data in the form of signed char
             pc++;
-            signed char e8value = memory[pc];
+            signed char e8value = (signed char) readMemory(pc);
             //the test for the CFLAG needs to use 8 total bits, in the signed form the seventh bit is thrown out as a sign value so if you have a signed
             //value of 0xFF it will be -127 instead of 255.
             unsigned char unsigned_e8value = e8value;
@@ -837,9 +841,9 @@ void emulateCycle()
         case 0x08:
         {
             pc++;
-            unsigned char LowerNibble = memory[pc];
+            unsigned char LowerNibble = readMemory(pc);
             pc++;
-            unsigned char HighNibble = memory[pc];
+            unsigned char HighNibble = readMemory(pc);
             unsigned short memoryLocation = (HighNibble << 8);
             memoryLocation |= LowerNibble;
             writeInMemory(memoryLocation, sp & 0xFF);
@@ -894,10 +898,12 @@ void emulateCycle()
             addRegister(&AF.A, &HL.L, 4);
             break;
         case 0x86:
+            readMemory(HL.HL);
             addRegister(&AF.A, &memory[HL.HL], 8);
             break;
         case 0xC6:
             pc++;
+            readMemory(pc);
             addRegister(&AF.A, &memory[pc], 8);
             break;
         case 0x8F:
@@ -922,10 +928,12 @@ void emulateCycle()
             adcRegister(&AF.A, &HL.L, 4);
             break;
         case 0x8E:
+            readMemory(HL.HL);
             adcRegister(&AF.A, &memory[HL.HL], 8);
             break;
         case 0xCE:
             pc++;
+            readMemory(pc);
             adcRegister(&AF.A, &memory[pc], 8);
             break;
         case 0x97:
@@ -950,10 +958,12 @@ void emulateCycle()
             subRegister(&AF.A, &HL.L, 4);
             break;
         case 0x96:
+            readMemory(HL.HL);
             subRegister(&AF.A, &memory[HL.HL], 8);
             break;
         case 0xD6:
             pc++;
+            readMemory(pc);
             subRegister(&AF.A, &memory[pc], 8);
             break;
         case 0x9F:
@@ -978,10 +988,12 @@ void emulateCycle()
             sbcRegister(&AF.A, &HL.L, 4);
             break;
         case 0x9E:
+            readMemory(HL.HL);
             sbcRegister(&AF.A, &memory[HL.HL], 8);
             break;
         case 0xDE:
             pc++;
+            readMemory(pc);
             sbcRegister(&AF.A, &memory[pc], 8);
             break;
         case 0xA7:
@@ -1006,10 +1018,12 @@ void emulateCycle()
             andOperation(&HL.L, 4);
             break;
         case 0xA6:
+            readMemory(HL.HL);
             andOperation(&memory[HL.HL], 8);
             break;
         case 0xE6:
             pc++;
+            readMemory(pc);
             andOperation(&memory[pc], 8);
             break;
         case 0xB7:
@@ -1034,10 +1048,12 @@ void emulateCycle()
             orOperation(&HL.L, 4);
             break;
         case 0xB6:
+            readMemory(HL.HL);
             orOperation(&memory[HL.HL], 8);
             break;
         case 0xF6:
             pc++;
+            readMemory(pc);
             orOperation(&memory[pc], 8);
             break;
         case 0xAF:
@@ -1062,10 +1078,12 @@ void emulateCycle()
             xorOperation(&HL.L, 4);
             break;
         case 0xAE:
+            readMemory(HL.HL);
             xorOperation(&memory[HL.HL], 8);
             break;
         case 0xEE:
             pc++;
+            readMemory(pc);
             xorOperation(&memory[pc], 8);
             break;
         case 0xBF:
@@ -1090,11 +1108,13 @@ void emulateCycle()
             cpRegister(&HL.L, 4);
             break;
         case 0xBE:
+            readMemory(HL.HL);
             cpRegister(&memory[HL.HL], 8);
             break;
         case 0xFE:
             //pc != 0xc368
             pc++;
+            readMemory(pc);
             cpRegister(&memory[pc], 8);
             break;
         case 0x3C:
@@ -1119,6 +1139,7 @@ void emulateCycle()
             incRegister(&HL.L, 4);
             break;
         case 0x34:
+            readMemory(HL.HL);
             incRegister(&memory[HL.HL], 12);
             break;
         case 0x3D:
@@ -1143,6 +1164,7 @@ void emulateCycle()
             decRegister(&HL.L, 4);
             break;
         case 0x35:
+            readMemory(HL.HL);
             decRegister(&memory[HL.HL], 12);
             break;
         case 0x09:
@@ -1162,7 +1184,7 @@ void emulateCycle()
             //resetting Flags;
             AF.F = 0;
             pc++;
-            signed char e8value = memory[pc];
+            signed char e8value = (signed char) readMemory(pc);
             //the test for the CFLAG needs to use 8 total bits, in the signed form the seventh bit is thrown out as a sign value so if you have a signed
             //value of 0xFF it will be -127 instead of 255.
             unsigned char unsigned_e8value = e8value;
@@ -1486,6 +1508,7 @@ void emulateCycle()
                     swap(&HL.L, 8);
                     break;
                 case 0x36:
+                    readMemory(HL.HL);
                     swap(&memory[HL.HL], 16);
                     break;
                 case 0x07:
@@ -1510,6 +1533,7 @@ void emulateCycle()
                     rlcRegister(&HL.L, 8);
                     break;
                 case 0x06:
+                    readMemory(HL.HL);
                     rlcRegister(&memory[HL.HL], 16);
                     break;
                 case 0x17:
@@ -1534,6 +1558,7 @@ void emulateCycle()
                     rlRegister(&HL.L, 8);
                     break;
                 case 0x16:
+                    readMemory(HL.HL);
                     rlRegister(&memory[HL.HL],16);
                     break;
                 case 0x0F:
@@ -1558,6 +1583,7 @@ void emulateCycle()
                     rrcRegister(&HL.L, 8);
                     break;
                 case 0x0E:
+                    readMemory(HL.HL);
                     rrcRegister(&memory[HL.HL],16);
                     break;
                 case 0x1F:
@@ -1582,6 +1608,7 @@ void emulateCycle()
                     rrRegister(&HL.L, 8);
                     break;
                 case 0x1E:
+                    readMemory(HL.HL);
                     rrRegister(&memory[HL.HL], 16);
                     break;
                 case 0x27:
@@ -1606,6 +1633,7 @@ void emulateCycle()
                     SLA(&HL.L, 8);
                     break;
                 case 0x26:
+                    readMemory(HL.HL);
                     SLA(&memory[HL.HL], 16);
                     break;
                 case 0x2F:
@@ -1630,6 +1658,7 @@ void emulateCycle()
                     SRA(&HL.L, 8);
                     break;
                 case 0x2E:
+                    readMemory(HL.HL);
                     SRA(&memory[HL.HL],16);
                     break;
                 case 0x3F:
@@ -1654,6 +1683,7 @@ void emulateCycle()
                     SRL(&HL.L, 8);
                     break;
                 case 0x3E:
+                    readMemory(HL.HL);
                     SRL(&memory[HL.HL],16);
                     break;
                 case 0x47:
@@ -1678,6 +1708,7 @@ void emulateCycle()
                     BIT(&HL.L, 0, 8);
                     break;
                 case 0x46:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 0, 16);
                     break;
                 case 0x4F:
@@ -1702,6 +1733,7 @@ void emulateCycle()
                     BIT(&HL.L, 1, 8);
                     break;
                 case 0x4E:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 1, 16);
                     break;
                 case 0x57:
@@ -1726,6 +1758,7 @@ void emulateCycle()
                     BIT(&HL.L, 2, 8);
                     break;
                 case 0x56:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 2, 16);
                     break;
                 case 0x5F:
@@ -1750,6 +1783,7 @@ void emulateCycle()
                     BIT(&HL.L, 3, 8);
                     break;
                 case 0x5E:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 3, 16);
                     break;
                 case 0x67:
@@ -1774,6 +1808,7 @@ void emulateCycle()
                     BIT(&HL.L, 4, 8);
                     break;
                 case 0x66:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 4, 16);
                     break;
                 case 0x6F:
@@ -1798,6 +1833,7 @@ void emulateCycle()
                     BIT(&HL.L, 5, 8);
                     break;
                 case 0x6E:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 5, 16);
                     break;
                 case 0x77:
@@ -1822,6 +1858,7 @@ void emulateCycle()
                     BIT(&HL.L, 6, 8);
                     break;
                 case 0x76:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 6, 16);
                     break;
                 case 0x7F:
@@ -1846,6 +1883,7 @@ void emulateCycle()
                     BIT(&HL.L, 7, 8);
                     break;
                 case 0x7E:
+                    readMemory(HL.HL);
                     BIT(&memory[HL.HL], 7, 16);
                     break;
                 case 0xC7:
@@ -1870,6 +1908,7 @@ void emulateCycle()
                     SET(&HL.L, 0, 8);
                     break;
                 case 0xC6:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 0, 16);
                     break;
                 case 0xCF:
@@ -1894,6 +1933,7 @@ void emulateCycle()
                     SET(&HL.L, 1, 8);
                     break;
                 case 0xCE:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 1, 16);
                     break;
                 case 0xD7:
@@ -1918,6 +1958,7 @@ void emulateCycle()
                     SET(&HL.L, 2, 8);
                     break;
                 case 0xD6:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 2, 16);
                     break; 
                 case 0xDF:
@@ -1942,6 +1983,7 @@ void emulateCycle()
                     SET(&HL.L, 3, 8);
                     break;
                 case 0xDE:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 3, 16);
                     break;
                 case 0xE7:
@@ -1966,6 +2008,7 @@ void emulateCycle()
                     SET(&HL.L, 4, 8);
                     break;
                 case 0xE6:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 4, 16);
                     break;
                 case 0xEF:
@@ -1990,6 +2033,7 @@ void emulateCycle()
                     SET(&HL.L, 5, 8);
                     break;
                 case 0xEE:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 5, 16);
                     break;
                 case 0xF7:
@@ -2014,6 +2058,7 @@ void emulateCycle()
                     SET(&HL.L, 6, 8);
                     break;
                 case 0xF6:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 6, 16);
                     break;
                 case 0xFF:
@@ -2038,6 +2083,7 @@ void emulateCycle()
                     SET(&HL.L, 7, 8);
                     break;
                 case 0xFE:
+                    readMemory(HL.HL);
                     SET(&memory[HL.HL], 7, 16);
                     break;
                 case 0x87:
@@ -2062,6 +2108,7 @@ void emulateCycle()
                     RES(&HL.L, 0, 8);
                     break;
                 case 0x86:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 0, 16);
                     break;
                 case 0x8F:
@@ -2086,6 +2133,7 @@ void emulateCycle()
                     RES(&HL.L, 1, 8);
                     break;
                 case 0x8E:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 1, 16);
                     break;
                 case 0x97:
@@ -2110,6 +2158,7 @@ void emulateCycle()
                     RES(&HL.L, 2, 8);
                     break;
                 case 0x96:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 2, 16);
                     break;
                 case 0x9F:
@@ -2134,6 +2183,7 @@ void emulateCycle()
                     RES(&HL.L, 3, 8);
                     break;
                 case 0x9E:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 3, 16);
                     break;
                 case 0xA7:
@@ -2158,6 +2208,7 @@ void emulateCycle()
                     RES(&HL.L, 4, 8);
                     break;
                 case 0xA6:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 4, 16);
                     break;
                 case 0xAF:
@@ -2182,6 +2233,7 @@ void emulateCycle()
                     RES(&HL.L, 5, 8);
                     break;
                 case 0xAE:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 5, 16);
                     break;
                 case 0xB7:
@@ -2206,6 +2258,7 @@ void emulateCycle()
                     RES(&HL.L, 6, 8);
                     break;
                 case 0xB6:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 6, 16);
                     break;
                 case 0xBF:
@@ -2230,6 +2283,7 @@ void emulateCycle()
                     RES(&HL.L, 7, 8);
                     break;
                 case 0xBE:
+                    readMemory(HL.HL);
                     RES(&memory[HL.HL], 7, 16);
                     break;
                 default:
@@ -2977,105 +3031,6 @@ void POPAF()
     clockTiming(12);
 }
 
-void drawGraphics()
-{
-
-    if (memory[LY] < 144)
-    {
-        unsigned short locationOfTileData = 0;
-        //checking the position of memory the BG tile data is located, if testBit is true, BG = 0x8000-0x8FFF, else, 0x8800-0x97FF
-        //this will determine where to search for the data of the tile number that needs to be displayed.
-        if (testBit(memory[LCDC], 4))
-        {
-            locationOfTileData = 0x8000;
-        }
-        else
-        {
-            locationOfTileData = 0x8800;
-        }
-
-        unsigned short locationOfTileNumber = 0;
-        //checking the position of memory the BG Tile Map Display is located, if testBit is true, BG = 9C00-9FFF, else, 9800-9BFF
-        //this will determine where to search for the number of the tile that we will need to search.
-        if (testBit(memory[LCDC], 3))
-        {
-            locationOfTileNumber = 0x9C00;
-        }
-        else
-        {
-            locationOfTileNumber = 0x9800;
-        }
-        //the position of memory of the tile number XX is: 0x8XX0;
-        char tileNumber = 0;
-        char MSB = 0;//most significant bit
-        char LSB = 0;//less significant bit
-        char lineOfTile[2];
-        //in the BG map tile numbers every byte contains the number of the tile (position of tile in memory) to be displayed in a 32*32 grid, 
-        //every tile hax 8*8 pixels, totaling 256*256 pixels that is drawn to the screen.
-        for (int y = 0; y < 32; y++)
-        {
-            //printf("%x", (0x9800) + (32 * y));
-            for (int x = 0; x < 32; x++)
-            {
-
-                tileNumber = memory[(locationOfTileNumber + x) + (32 * y)];
-                //printf("tileNumber: %X   lineOfTile[0]: ", tileNumber);
-
-                //for every tile there is 16 bytes, for 2 bytes there is 8 pixels to be drawn. 
-                for (int yPixel = 0; yPixel < 8; yPixel++)
-                {
-                    //getting first byte of the line
-                    unsigned short memoryPosition = locationOfTileData + (tileNumber * 16) + (2 * yPixel);
-                    lineOfTile[0] = memory[memoryPosition];
-                    //printf("%X", 0x8000 + (tileNumber * 10) + (2 * yPixel));
-                    //getting second byte of the line
-                    memoryPosition = locationOfTileData + (tileNumber * 16) + (2 * yPixel) + 1;
-                    lineOfTile[1] = memory[memoryPosition];
-                    for (int xPixel = 0; xPixel < 8; xPixel++)
-                    {
-                        MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
-                        MSB >>= (7 - xPixel);
-                        LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
-                        LSB >>= (7 - xPixel);
-                        switch (MSB)
-                        {
-                        case 0:
-                            switch (LSB)
-                            {
-                            case 0:
-                                //white color
-                                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                                break;
-                            case 1:
-                                //blue-green color
-                                SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                                break;
-                            }
-                            break;
-                        case 1:
-                            switch (LSB)
-                            {
-                            case 0:
-                                //light green color
-                                SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                                break;
-                            case 1:
-                                //dark green color
-                                SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                                break;
-                            }
-                            break;
-                        }
-                        SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), ((y * 8) + yPixel));
-                    }
-                    //printf("\n");
-                }
-            }
-        }
-        SDL_RenderPresent(renderer);
-    }
-}
-
 void clockTiming(unsigned char cycles)
 {
     if (cycles != 0)
@@ -3099,6 +3054,7 @@ void clockTiming(unsigned char cycles)
                 else if (memory[LY] > 153)
                 {
                     memory[LY] = 0;
+                    SDL_RenderPresent(renderer);
                 }
                 else if (memory[LY] <= 143)
                 {
@@ -3229,21 +3185,86 @@ void renderTiles()
                 break;
             }
             SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), memory[LY]);
-            SDL_RenderPresent(renderer);
         }
         //printf("\n");
     }
 }
 
-short BGSelectMode(unsigned char *offset)
-{
-    /*if (testBit(memory[LCDC], 4))
-    */
-}
-
 void renderSprites()
 {
+    if (testBit(memory[LCDC], 1))
+    {
+        unsigned char spriteBytes[4] = {0};
+        unsigned short memoryLocation;
+        unsigned char tileNumber;
+        
+        for (int x = 0; x < 40; x++)
+        {
+            //
+            for (int bytes = 0; bytes < 4; bytes++)
+            {
+                memoryLocation = 0xFE00 + (x * 4) + bytes;
+                spriteBytes[bytes] = memory[memoryLocation];
+            }
+            //if it isnt in this value range, the sprite will be hidden so we don't need to draw it in this frame.
+            if ((spriteBytes[0] - 16) > 0 && (spriteBytes[0] - 16) < 160)
+            {
+                unsigned char yPixel = 0;
+                while ((spriteBytes[0] - 16 + yPixel) <= memory[LY] && yPixel != 8)
+                {
+                    unsigned char MSB = 0;//most significant bit
+                    unsigned char LSB = 0;//less significant bit
+                    unsigned char lineOfTile[2];
+                    unsigned char xPosition = spriteBytes[1];
+                    unsigned char yPosition = memory[LY]  - spriteBytes[0];
 
+                    tileNumber = spriteBytes[2];
+                    memoryLocation = 0x8000 + (tileNumber * 16) +  (yPixel * 2);
+                    lineOfTile[0] = memory[memoryLocation];
+                    memoryLocation = 0x8000 + (tileNumber * 16) + (yPixel * 2) + 1;
+                    lineOfTile[1] = memory[memoryLocation];
+                    for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
+                    {
+                        MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
+                        MSB >>= (7 - xPixel);
+                        LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+                        LSB >>= (7 - xPixel);
+                        switch (MSB)
+                        {
+                        case 0:
+                            switch (LSB)
+                            {
+                            case 0:
+                                //white color
+                                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                                break;
+                            case 1:
+                                //blue-green color
+                                SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
+                                break;
+                            }
+                            break;
+                        case 1:
+                            switch (LSB)
+                            {
+                            case 0:
+                                //light green color
+                                SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
+                                break;
+                            case 1:
+                                //dark green color
+                                SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
+                                break;
+                            }
+                            break;
+                        }
+                        SDL_RenderDrawPoint(renderer, ((xPosition + xPixel) - 8), ((spriteBytes[0] + yPixel) - 16));        
+                    }
+                    yPixel++;
+                }
+            }
+        } 
+    }
 }
 
 void setLCDSTAT()
@@ -3408,7 +3429,6 @@ void setInterruptAddress(unsigned char bit)
 
 void writeInMemory(unsigned short memoryLocation, unsigned char data)
 {
-    //!!!!!!!!!!implement register ff68 and ff69.
     if (memoryLocation <= 0x8000)
     {
         //this memory location is read only
@@ -3449,9 +3469,22 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
         //increment 0xFF68
         memory[0xFF68]++;
     }
+    //bug on DMG models that triggers a STAT interrupt anytime the STAT register is written.
+    else if (memoryLocation == STAT)
+    {
+        requestInterrupt(1);
+    }
     else if (memoryLocation == 0xFF46)
     {
         dmaTransfer(data);
+    }
+    else if (memoryLocation == 0xFF00)
+    {
+        if ((data & 0x30) != 0x30)
+        {
+            memory[0xFF00] |= 0xF;
+        }
+        memory[0xFF00] = ((data & 0b00110000) | (memory[0xFF00] & 0b11001111));
     }
     else
     {
@@ -3459,12 +3492,17 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
     }
 }
 
-void readMemory(unsigned short memoryLocation)
+unsigned char readMemory(unsigned short memoryLocation)
 {
 
     if (memoryLocation == 0xFF00)
     {
-        
+        joypad();
+        return memory[memoryLocation];
+    }
+    else
+    {
+        return memory[memoryLocation];
     }
 }
 
@@ -3547,6 +3585,160 @@ void doHalt()
             pc-=2;
         }
     }
+}
+
+void handleEvents()
+{
+    SDL_Event event;
+    
+    if (!testBit(memory[0xFF00], 4) && !testBit(memory[0xFF00], 5))
+    {
+        return;
+    }
+    while (SDL_PollEvent(&event))
+    {
+        
+        switch (event.type)
+        {
+        case SDL_QUIT:
+            isRunning = false;
+            break;
+        case SDL_KEYDOWN:
+            switch (event.key.keysym.sym)
+            {
+            case SDLK_z:
+                if (testBit(joypadKeys, 4))
+                {
+                    RES(&joypadKeys, 4, 0);
+                    makeJoypadInterrupt(false, 4);
+                }
+                break;
+            case SDLK_x:
+                if (testBit(joypadKeys, 5))
+                {
+                    RES(&joypadKeys, 5, 0);
+                    makeJoypadInterrupt(false, 1);
+                }
+                break;
+            case SDLK_a:
+                if (testBit(joypadKeys, 6))
+                {
+                    RES(&joypadKeys, 6, 0);
+                    makeJoypadInterrupt(false, 2);
+                }
+                break;
+            case SDLK_s:
+                if (testBit(joypadKeys, 7))
+                {
+                    RES(&joypadKeys, 7, 0);
+                    makeJoypadInterrupt(false, 3);
+                }
+                break;
+            case SDLK_UP:
+                if (testBit(joypadKeys, 2))
+                {
+                    RES(&joypadKeys, 2, 0);
+                    makeJoypadInterrupt(false, 2);
+                }
+                break;
+            case SDLK_DOWN:
+                if (testBit(joypadKeys, 3))
+                {
+                    RES(&joypadKeys, 3, 0);
+                    makeJoypadInterrupt(false, 3);
+                }
+                break;
+            case SDLK_LEFT:
+                if (testBit(joypadKeys, 1))
+                {
+                    RES(&joypadKeys, 1, 0);
+                    makeJoypadInterrupt(false, 1);
+                }
+                break;
+            case SDLK_RIGHT:
+                if (testBit(joypadKeys, 0))
+                {
+                    RES(&joypadKeys, 0, 0);
+                    makeJoypadInterrupt(false, 0);
+                }
+                break;
+            }
+            break;
+        break;
+        case SDL_KEYUP:
+            switch (event.key.keysym.sym)
+            {
+            case SDLK_UP:
+                SET(&joypadKeys, 2, 0);
+                break;
+            case SDLK_DOWN:
+                SET(&joypadKeys, 3, 0);
+                break;
+            case SDLK_LEFT:
+                SET(&joypadKeys, 1, 0);
+                break;
+            case SDLK_RIGHT:
+                SET(&joypadKeys, 0, 0);
+                break;
+            case SDLK_z:
+                SET(&joypadKeys, 4, 0);
+                break;
+            case SDLK_x:
+                SET(&joypadKeys, 5, 0);
+                break;
+            case SDLK_a:
+                SET(&joypadKeys, 6, 0);
+                break;
+            case SDLK_s:
+                SET(&joypadKeys, 7, 0);
+                break;
+            default:
+                break;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+}
+
+void makeJoypadInterrupt(bool directional, unsigned char bit)
+{
+    if (directional && !testBit(memory[0xFF00], 4))
+    {
+        requestInterrupt(4);
+    }
+    else if (!directional && !testBit(memory[0xFF00], 5))
+    {
+        requestInterrupt(4);
+    }
+}
+
+void joypad()
+{
+
+    if (!testBit(memory[0xFF00], 4) && ((joypadKeys & 0x0F) != 0x0F))
+    {
+        unsigned char lowerByte = joypadKeys & 0x0F;
+        lowerByte |= 0xF0;
+        memory[0xFF00] |= 0xF;
+        memory[0xFF00] &= lowerByte;
+    }
+    else if(!testBit(memory[0xFF00], 5) && ((joypadKeys & 0xF0) != 0xF0))
+    {
+        unsigned char lowerByte = (joypadKeys >> 4);
+        lowerByte |= 0xF0;
+        memory[0xFF00] |= 0xF;
+        memory[0xFF00] &= lowerByte;
+    }
+}
+
+void quitGame()
+{
+    SDL_DestroyWindow(window);
+    SDL_DestroyRenderer(renderer);
+    SDL_Quit();
 }
 
 void print_binary(int number)
