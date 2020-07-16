@@ -141,6 +141,8 @@ bool halt = false;
 //SDL
 SDL_Window* window = NULL;
 SDL_Renderer* renderer = NULL;
+SDL_Texture* texture = NULL;
+unsigned int* pixels;
 bool drawFlag = false;
 bool isRunning;
 
@@ -148,6 +150,7 @@ bool isRunning;
 void print_binary(int number);
 //sdl
 void setupGraphics();
+int main(int argc, char* argv[]);
 //gameboy
 void initialize();
 void loadGame(char* gameName);
@@ -218,15 +221,23 @@ int main(int argc, char* argv[])
     loadGame("oi");
     setupGraphics();
     
+    pixels = (unsigned int*)malloc(sizeof(unsigned int) * (160 * 144));
+    if (pixels == NULL)
+    {
+        printf("couldn't create pixels");
+        exit(0);
+    }
     while (isRunning == true)
     {
         cyclesBeforeLCDRender = 0;
-        while (cyclesBeforeLCDRender < maxCycleBeforeRender)
+        while (cyclesBeforeLCDRender < (maxCycleBeforeRender))
         {
             handleEvents();
             emulateCycle();
             doInterrupts();
-        }  
+        }    
+        //SDL_UpdateTexture(texture, NULL, pixels, 160 * sizeof(unsigned int));
+        SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
     }
     void quitGame();
@@ -275,6 +286,7 @@ void initialize()
     memory[0xFF49] = 0xFF; //0BP1
     memory[0xFF4A] = 0x00; //WY
     memory[0xFF4B] = 0x00; //WX
+    memory[IF] = 0xE1;
     memory[0xFFFF] = 0x00; //IE
 
     sp = StackStart;
@@ -331,11 +343,12 @@ void loadGame(char* gameName)
 void setupGraphics()
 {
     //SDL_INIT_EVERYTHING
-    if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_TIMER) == 0) {
+    if (SDL_Init(SDL_INIT_EVENTS ) == 0) {
         printf("entering here\n");
         window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_SHOWN);
         //window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_SHOWN);
         renderer = SDL_CreateRenderer(window, -1, 0);
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC, 160, 144);
         if (window != NULL)
         {
             printf("window created\n");
@@ -355,7 +368,6 @@ void setupGraphics()
     }
     else
     {
-
         isRunning = false;
     }
 }
@@ -1396,8 +1408,8 @@ void emulateCycle()
             updateTimers(4);
             break;
         case 0xFB:
-            updateTimers(4);
             delayMasterInterrupt = true;
+            updateTimers(4);
             break;
         case 0xC7:
         {
@@ -3060,9 +3072,8 @@ void clockTiming(unsigned char cycles)
                 }
                 else if (memory[LY] <= 143)
                 {
-                    drawScanLine();
-                }
-                
+                    drawScanLine();             
+                }  
             }
         }
     }
@@ -3255,7 +3266,8 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 1:
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                pixels[(160 * yPixel) + xPixel] = 0x294E52FF;
+                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
             break;
@@ -3265,12 +3277,14 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 0:
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                pixels[(160 * yPixel) + xPixel] = 0x427211FF;
+                //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                pixels[(160 * yPixel) + xPixel] = 0x102612FF;
+                //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
                 break;
             }
             break;
@@ -3286,12 +3300,14 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 0:
                 //white color
                 //SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
+                pixels[(160 * yPixel) + xPixel] = 0xDCFFDCFF;
+                //SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
                 break;
             case 1:
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                pixels[(160 * yPixel) + xPixel] = 0x294E52FF;
+                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
             break;
@@ -3301,19 +3317,20 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 0:
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                pixels[(160 * yPixel) + xPixel] = 0x427211FF;
+                //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                pixels[(160 * yPixel) + xPixel] = 0x102612FF;
+                //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
                 break;
             }
             break;
         }
     }
-    
-    SDL_RenderDrawPoint(renderer, xPixel, yPixel);
+    //SDL_RenderDrawPoint(renderer, xPixel, yPixel);
 }
 
 void setLCDSTAT()
@@ -3393,7 +3410,7 @@ void updateTimers(unsigned char cycles)
     }
 
     //if bit 2 of register FF07 is 1, then the timer is enabled
-    if (((memory[TMC] & 0b00000100) >> 2) == 1)
+    if (testBit(memory[TMC], 2))
     {
         timerCounter -= cycles;
         if (timerCounter <= 0)
@@ -3403,6 +3420,7 @@ void updateTimers(unsigned char cycles)
             //updating timer
             if (memory[TIMA] == 255)
             {
+                
                 writeInMemory(TIMA, memory[TMA]);
                 requestInterrupt(2);
             }else
@@ -3454,10 +3472,16 @@ void doInterrupts()
 void setInterruptAddress(unsigned char bit)
 {
     masterInterrupt = false;
-    RES(&memory[IF], bit, 0);
+    RES(&memory[IF], bit, 4);
     unsigned char highByte = (pc >> 8);
     unsigned char lowByte = (pc & 0xFF);
     PUSH(&highByte, &lowByte);
+    //if cpu is in halt mode, it takes 4 more cycles to complete the interrupt, to a total of 24 cycles.
+    if (halt)
+    {
+        halt = false;
+        clockTiming(4);
+    }
     switch (bit)
     {
     case 0:
@@ -3500,9 +3524,9 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
     }
     else if (memoryLocation == TMC)
     {
-        unsigned char currentFrequency = memory[TMC] & 0b00000011;
+        unsigned char currentFrequency = memory[TMC] & 0b00000111;
         memory[TMC] = data;
-        unsigned char newFrequency = memory[TMC] & 0b00000011;
+        unsigned char newFrequency = memory[TMC] & 0b00000111;
         if (newFrequency != currentFrequency)
         {
             setClockFrequency();
@@ -3548,9 +3572,27 @@ unsigned char readMemory(unsigned short memoryLocation)
         joypad();
         return memory[memoryLocation];
     }
-    else if (memoryLocation == (0xFF70 || 0xFF4F))
+    else if (memoryLocation == (0xFF70 || 0xFF4F || 0xFF4D))
     {
         return 0xFF;
+    }
+    else if (memoryLocation == TMC)
+    {
+        unsigned char data = 0b11111000;
+        data |= memory[TMC];
+        return data;
+    }
+    else if (memoryLocation == 0xFF0F)
+    {
+        unsigned char data = 0b11100000;
+        data |= memory[0xFF0F];
+        return data;
+    }
+    else if (memoryLocation == STAT)
+    {
+        unsigned char data = 0b10000000;
+        data |= memory[STAT];
+        return data;
     }
     else
     {
@@ -3604,6 +3646,8 @@ void doHalt()
     //to the interrupt adress. The IF flag of the interrupt is reset.
     if (masterInterrupt)
     {
+        //it needs to be set true because we will check for it in the interrupt function and if it is true it will take 4 more cycles to complete.
+        halt = true;
         if ((memory[IE] & memory[IF] & 0x1F) == 0)
         {
             while ((memory[IE] & memory[IF] & 0x1F) == 0)
@@ -3626,6 +3670,8 @@ void doHalt()
                 //increasing clock cycle by 4 until an interrupt is made;
                 clockTiming(4);
             }
+            //it takes 4 clock cycles to exit HALT mode after an interrupt is made.
+            clockTiming(4);
         }
         else
         {
@@ -3789,8 +3835,10 @@ void joypad()
 void quitGame()
 {
     SDL_DestroyWindow(window);
+    SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_Quit();
+    free(pixels);
 }
 
 void print_binary(int number)
