@@ -200,6 +200,7 @@ void setLCDSTAT();
 void drawScanLine();
 void renderTiles();
 void renderSprites();
+void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel, bool sprite);
 void doInterrupts();
 void setInterruptAddress(unsigned char bit);
 void requestInterrupt(unsigned char bit);
@@ -226,6 +227,7 @@ int main(int argc, char* argv[])
             emulateCycle();
             doInterrupts();
         }  
+        SDL_RenderPresent(renderer);
     }
     void quitGame();
     //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
@@ -242,9 +244,9 @@ void initialize()
     DE.DE = 0x00D8;
     HL.HL = 0x014D;
     memory[0xFF00] = 0xCF; //JOYPAD
-    memory[0xFF05] = 0x00; //TIMA
-    memory[0xFF06] = 0x00; //TMA
-    memory[0xFF07] = 0x00; //TAC
+    memory[TIMA] = 0x00; //TIMA
+    memory[TMA] = 0x00; //TMA
+    memory[TMC] = 0x00; //TAC
     memory[0xFF10] = 0x80; //NR10
     memory[0xFF11] = 0xBF; //NR11
     memory[0xFF12] = 0xF3; //NR12
@@ -263,7 +265,8 @@ void initialize()
     memory[0xFF24] = 0x77; //NR50
     memory[0xFF25] = 0xF3; //NR51
     memory[0xFF26] = 0xF1; //the value is different for GB and SGB; -> NR52
-    memory[0xFF40] = 0x91; //LCDC
+    memory[LCDC] = 0x91; //LCDC
+    memory[STAT] = 0x80;
     memory[0xFF42] = 0x00; //SCY
     memory[0xFF43] = 0x00; //SCX
     memory[0xFF45] = 0x00; //LYC
@@ -280,7 +283,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Tetris (W) (V1.0) [!].gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Dr. Mario (W) (V1.1).gb", "rb");
     if (file == NULL) {
         printf("File not found");
         exit(EXIT_FAILURE);
@@ -381,7 +384,7 @@ void emulateCycle()
     //pc == 0x358
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
-    //printf("checking opcode: [%X],    pc: [%X]\n", opcode, pc);
+    //printf("checking opcode: [%X], pc: [%X], LY: [%X], STAT:[%X], AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, memory[LY], memory[STAT], AF.AF, BC.BC, DE.DE, HL.HL);
     switch (opcode & 0xFF)
     {
         case 0x10:
@@ -1393,8 +1396,8 @@ void emulateCycle()
             updateTimers(4);
             break;
         case 0xFB:
-            delayMasterInterrupt = true;
             updateTimers(4);
+            delayMasterInterrupt = true;
             break;
         case 0xC7:
         {
@@ -3054,7 +3057,6 @@ void clockTiming(unsigned char cycles)
                 else if (memory[LY] > 153)
                 {
                     memory[LY] = 0;
-                    SDL_RenderPresent(renderer);
                 }
                 else if (memory[LY] <= 143)
                 {
@@ -3155,36 +3157,7 @@ void renderTiles()
             MSB >>= (7 - xPixel);
             LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
             LSB >>= (7 - xPixel);
-            switch (MSB)
-            {
-            case 0:
-                switch (LSB)
-                {
-                case 0:
-                    //white color
-                    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                    break;
-                case 1:
-                    //blue-green color
-                    SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                    break;
-                }
-                break;
-            case 1:
-                switch (LSB)
-                {
-                case 0:
-                    //light green color
-                    SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                    break;
-                case 1:
-                    //dark green color
-                    SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                    break;
-                }
-                break;
-            }
-            SDL_RenderDrawPoint(renderer, ((x * 8) + xPixel), memory[LY]);
+            colorPallete(MSB, LSB, ((x * 8) + xPixel), memory[LY], false);
         }
         //printf("\n");
     }
@@ -3223,48 +3196,124 @@ void renderSprites()
                     lineOfTile[0] = memory[memoryLocation];
                     memoryLocation = 0x8000 + (tileNumber * 16) + (yPixel * 2) + 1;
                     lineOfTile[1] = memory[memoryLocation];
+
                     for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
                     {
-                        MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
-                        MSB >>= (7 - xPixel);
-                        LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
-                        LSB >>= (7 - xPixel);
-                        switch (MSB)
+                        //flip vertically
+                        if (testBit(spriteBytes[3], 5))
                         {
-                        case 0:
-                            switch (LSB)
+                            MSB = (lineOfTile[1] & (0b00000001 << xPixel));
+                            MSB >>= (xPixel);
+                            LSB = (lineOfTile[0] & (0b00000001 << xPixel));
+                            LSB >>= (xPixel);
+                            //flip horizontaly
+                            if (testBit(spriteBytes[3], 6))
                             {
-                            case 0:
-                                //white color
-                                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                                break;
-                            case 1:
-                                //blue-green color
-                                SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                                break;
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), ((spriteBytes[0] + yPixel) - 16), true);
                             }
-                            break;
-                        case 1:
-                            switch (LSB)
+                            else
                             {
-                            case 0:
-                                //light green color
-                                SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                                break;
-                            case 1:
-                                //dark green color
-                                SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                                break;
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), ((spriteBytes[0] + yPixel) - 16), true);
                             }
-                            break;
+                            
                         }
-                        SDL_RenderDrawPoint(renderer, ((xPosition + xPixel) - 8), ((spriteBytes[0] + yPixel) - 16));        
+                        else
+                        {
+                            MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
+                            MSB >>= (7 - xPixel);
+                            LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+                            LSB >>= (7 - xPixel);
+                            if (testBit(spriteBytes[3], 6))
+                            {
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), ((spriteBytes[0] + yPixel) - 16), true);
+                            }
+                            else
+                            {
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), ((spriteBytes[0] + yPixel) - 16), true);
+                            }
+                        }
                     }
                     yPixel++;
                 }
             }
         } 
     }
+}
+
+void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, unsigned char yPixel, bool sprite)
+{
+    if (sprite)
+    {
+        switch (MSB)
+        {
+        case 0:
+            switch (LSB)
+            {
+            case 0:
+                //00 is transparent.
+                return;
+            case 1:
+                //blue-green color
+                //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
+                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                break;
+            }
+            break;
+        case 1:
+            switch (LSB)
+            {
+            case 0:
+                //light green color
+                //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
+                SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                break;
+            case 1:
+                //dark green color
+                //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
+                SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                break;
+            }
+            break;
+        }
+    }
+    else
+    {
+        switch (MSB)
+        {
+        case 0:
+            switch (LSB)
+            {
+            case 0:
+                //white color
+                //SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
+                break;
+            case 1:
+                //blue-green color
+                //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
+                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                break;
+            }
+            break;
+        case 1:
+            switch (LSB)
+            {
+            case 0:
+                //light green color
+                //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
+                SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                break;
+            case 1:
+                //dark green color
+                //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
+                SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                break;
+            }
+            break;
+        }
+    }
+    
+    SDL_RenderDrawPoint(renderer, xPixel, yPixel);
 }
 
 void setLCDSTAT()
@@ -3274,7 +3323,6 @@ void setLCDSTAT()
         memory[LY] = 0;
         scanlineCounter = 456;
         memory[STAT] &= 0b11111100;
-        SET(&memory[STAT], 0, 0);
         return;
     }
     unsigned char currentMode = (memory[STAT] & 0b00000011);
@@ -3499,6 +3547,10 @@ unsigned char readMemory(unsigned short memoryLocation)
     {
         joypad();
         return memory[memoryLocation];
+    }
+    else if (memoryLocation == (0xFF70 || 0xFF4F))
+    {
+        return 0xFF;
     }
     else
     {
