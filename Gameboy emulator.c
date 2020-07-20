@@ -7,7 +7,10 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include "SDL.h"
+#include <SDL_vulkan.h>
+#include <vulkan/vulkan.h>
 #include "SDL_image.h"
+#include <Windows.h>
 
 enum Constants
 {
@@ -85,6 +88,24 @@ union registerHL
     unsigned short HL;
 };
 
+struct vulkanContext{
+
+    unsigned long width;
+    unsigned long height;
+
+    VkInstance instance;
+    VkDebugUtilsMessengerEXT debugMessenger;
+    VkSurfaceKHR surface;
+
+    VkDevice device;
+    VkPhysicalDevice physicalDevice;
+    VkPhysicalDeviceProperties physicalDeviceProperties;
+
+    unsigned long presentQueueIdx;
+    VkQueue presentQueue;
+
+}context;
+
 //cpu
 unsigned char memory[0xFFFF + 1] = { 0 };//65536 bytes 
 unsigned short opcode;
@@ -143,13 +164,25 @@ SDL_Window* window = NULL;
 SDL_Renderer* renderer = NULL;
 SDL_Texture* texture = NULL;
 unsigned int* pixels;
+unsigned char WIDTH = 160;
+unsigned char HEIGTH = 144;
+
 bool drawFlag = false;
 bool isRunning;
 
 //////////////////////////////////////////////////FUNCTIONS//////////////////////////////////////////////////////////////////////////////////////////////
 void print_binary(int number);
-//sdl
+//sdl and Vulkan
 void setupGraphics();
+void setupVulkan();
+void createVulkanInstance();
+void createSurface();
+void setupDebugMessenger();
+void pickPhysicalDevice();
+void pickLogicalDevice();
+void checkVulkanResult(VkResult result, char* String);
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                                    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
 int main(int argc, char* argv[]);
 //gameboy
 void initialize();
@@ -220,6 +253,7 @@ int main(int argc, char* argv[])
     initialize();
     loadGame("oi");
     setupGraphics();
+    setupVulkan();
     
     pixels = (unsigned int*)malloc(sizeof(unsigned int) * (160 * 144));
     if (pixels == NULL)
@@ -236,12 +270,13 @@ int main(int argc, char* argv[])
             emulateCycle();
             doInterrupts();
         }    
-        //SDL_UpdateTexture(texture, NULL, pixels, 160 * sizeof(unsigned int));
+        SDL_UpdateTexture(texture, NULL, pixels, 160 * sizeof(unsigned int));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
     }
     void quitGame();
     //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
+    return 0;
 }
 
 void initialize()
@@ -345,10 +380,10 @@ void setupGraphics()
     //SDL_INIT_EVERYTHING
     if (SDL_Init(SDL_INIT_EVENTS ) == 0) {
         printf("entering here\n");
-        window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_SHOWN);
+        window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_VULKAN);
         //window = SDL_CreateWindow("title", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 320, 288, SDL_WINDOW_SHOWN);
         renderer = SDL_CreateRenderer(window, -1, 0);
-        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC, 160, 144);
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, 160, 144);
         if (window != NULL)
         {
             printf("window created\n");
@@ -364,11 +399,262 @@ void setupGraphics()
         SDL_RenderPresent(renderer);
         isRunning = true;
 
-
+        
     }
     else
     {
         isRunning = false;
+    }
+}
+
+void setupVulkan()
+{
+    createVulkanInstance();
+    createSurface();
+    setupDebugMessenger();
+    pickPhysicalDevice();
+    pickLogicalDevice();
+}
+
+void createVulkanInstance()
+{
+    
+    //Informations about the APP
+    VkApplicationInfo appInfo = {
+        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        appInfo.pNext = NULL,
+        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+        appInfo.pApplicationName = "GorodBoy",
+        appInfo.pEngineName = "No Engine",
+        appInfo.engineVersion = VK_MAKE_VERSION(1,0,0),
+        appInfo.apiVersion = VK_API_VERSION_1_0
+    };
+    
+
+    //creating the info about the APP
+    VkInstanceCreateInfo createInfo = {
+        createInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        createInfo.pApplicationInfo = &appInfo,
+        createInfo.enabledLayerCount = 0,
+        createInfo.ppEnabledLayerNames = NULL,
+        createInfo.enabledExtensionCount = 0,
+        createInfo.ppEnabledExtensionNames = NULL,
+    };    
+
+    VkResult result;
+
+    //getting the list of all available layers that we have
+    unsigned long layerCount = 0;
+    result = vkEnumerateInstanceLayerProperties(&layerCount, NULL);
+    checkVulkanResult(result, "Couldn't enumerate layer properties of instance");
+    VkLayerProperties* layersAvailable = (VkLayerProperties*) malloc (layerCount * sizeof(VkLayerProperties));
+    if (layersAvailable == NULL)
+    {
+        printf("Couldn't allocate layersAvailable");
+        exit(0);
+    }
+    result = vkEnumerateInstanceLayerProperties(&layerCount, layersAvailable);
+    checkVulkanResult(result, "Couldn't enumerate layer properties of instance");
+
+    //finding if the layer we want is on the list
+    bool foundValidation = false;
+    for (unsigned long i = 0; i < layerCount; ++i)
+    {
+        if (strcmp(layersAvailable[i].layerName, "VK_LAYER_KHRONOS_validation") == 0)
+        {
+            foundValidation = true;
+        }
+    }
+
+    //if it is, enable the said layer
+    if (!foundValidation)
+    {
+        printf("Couldn't find the specified layer");
+        exit(0);
+    }
+    const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
+    unsigned long numberRequiredLayers = sizeof(layers) / sizeof(char*);
+    createInfo.enabledLayerCount = numberRequiredLayers;
+    createInfo.ppEnabledLayerNames = layers;
+
+    //getting the list of all available extensions that we have
+    unsigned long extensionCount = 0;
+    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, NULL);
+    VkExtensionProperties* extensionsAvailable = (VkExtensionProperties*)malloc(extensionCount * sizeof(VkExtensionProperties));
+    if (extensionsAvailable == NULL)
+    {
+        printf("Couldn't allocate extensionsAvailable");
+        exit(0);
+    }
+    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, extensionsAvailable);
+
+    //finding if the extensions we want is available
+    const char* extensions[] = { "VK_KHR_surface", "VK_EXT_debug_utils" };
+    unsigned long numberRequiredExtensions = sizeof(extensions) / sizeof(char*);
+    unsigned long foundExtensions = 0;
+    for (unsigned long i = 0; i < extensionCount; ++i)
+    {
+        for (unsigned long j = 0; j < numberRequiredExtensions; ++j)
+        {
+            if (strcmp(extensions[j], extensionsAvailable[i].extensionName) == 0)
+            {
+                foundExtensions++;
+            }
+        }
+    }
+    if (foundExtensions != numberRequiredExtensions)
+    {
+        printf("found extensions doesn't match the required number of extensions");
+        exit(0);
+    }
+    createInfo.enabledExtensionCount = numberRequiredExtensions;
+    createInfo.ppEnabledExtensionNames = extensions;
+
+    
+    result = vkCreateInstance(&createInfo, NULL, &context.instance);
+    checkVulkanResult(result, "Couldn't create vulkan instance");
+
+    //if it is, enable the extension
+    
+
+    if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, NULL))
+    {
+        printf("Couldn't get instance extensions 1");
+        exit(0);
+    }
+
+    if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, extensions))
+    {
+        printf("Couldn't get instance extensions 2");
+        exit(0);
+    }
+}
+
+void createSurface()
+{
+    if (!SDL_Vulkan_CreateSurface(window, context.instance, &context.surface))
+    {
+        printf("couldn't create SDL Vulkan surface");
+        exit(0);
+    }
+}
+
+void setupDebugMessenger()
+{
+    //loading the vkDestroyDebugUtilsMessengerEXT Function
+    PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
+    *(void**)&vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr(context.instance, "vkCreateDebugUtilsMessengerEXT");
+
+    VkDebugUtilsMessengerCreateInfoEXT createInfo =
+    {
+        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+                                     | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                                 | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+        createInfo.pfnUserCallback = &debugCallback,
+        createInfo.pUserData = NULL, // Optional
+    };
+    checkVulkanResult(vkCreateDebugUtilsMessengerEXT(context.instance, &createInfo, NULL, &context.debugMessenger), "Failed to setup debug messenger");
+}
+
+void pickPhysicalDevice()
+{
+    context.physicalDevice = VK_NULL_HANDLE;
+
+    unsigned long devicesCount = 0;
+    vkEnumeratePhysicalDevices(context.instance, &devicesCount, NULL);
+    if (devicesCount == 0)
+    {
+        printf("There is no device with vulkan support");
+        exit(0);
+    }
+    VkPhysicalDevice* physicalDevices = (VkPhysicalDevice*)malloc(devicesCount * sizeof(VkPhysicalDevice));
+    if (physicalDevices == NULL)
+    {
+        printf("couldn't allocate memory for physicalDevices");
+        exit(0);
+    }
+    checkVulkanResult(vkEnumeratePhysicalDevices(context.instance, &devicesCount, physicalDevices), "couldn't enumerate physical devices");
+
+    for (unsigned long i = 0; i < devicesCount; ++i)
+    {
+        VkPhysicalDeviceProperties deviceProperties;
+        vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
+
+        unsigned long queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevices[i], &queueFamilyCount, NULL);
+        VkQueueFamilyProperties* queueFamilyProperties = (VkQueueFamilyProperties*) malloc (queueFamilyCount * sizeof(VkQueueFamilyProperties));
+        if (queueFamilyProperties == NULL)
+        {
+            printf("couldn't allocate memory for queueFamilyProperties");
+            exit(0);
+        }
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevices[i], &queueFamilyCount, queueFamilyProperties);
+        for (unsigned long j = 0; j < queueFamilyCount; ++j)
+        {
+            VkBool32 supportsPresent;
+            vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevices[i], j, context.surface, &supportsPresent);
+            
+            if (supportsPresent && (queueFamilyProperties[j].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+            {
+                context.physicalDevice = physicalDevices[i];
+                context.physicalDeviceProperties = deviceProperties;
+                context.presentQueueIdx = j;
+                break;
+            }
+        }
+        free(queueFamilyProperties);
+
+        if (context.physicalDevice == VK_NULL_HANDLE)
+        {
+            printf("couldn't find physicalDevice");
+            exit(0);
+        }
+    }
+    free (physicalDevices);
+}
+
+void pickLogicalDevice()
+{
+    float queuePiorities[] = { 1.0f };
+    VkDeviceQueueCreateInfo queueCreateInfo = {
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        queueCreateInfo.queueFamilyIndex = context.presentQueueIdx,
+        queueCreateInfo.queueCount = 1,
+        queueCreateInfo.pQueuePriorities = queuePiorities,
+    };
+
+    VkPhysicalDeviceFeatures deviceFeatures;
+
+    VkDeviceCreateInfo deviceInfo = {
+        deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        deviceInfo.queueCreateInfoCount = 1,
+        deviceInfo.pQueueCreateInfos = &queueCreateInfo,
+        deviceInfo.pEnabledFeatures = &deviceFeatures,
+    };
+
+    const char* deviceExtensions[] = { "VK_KHR_swapchain" };
+    deviceInfo.enabledExtensionCount = 1;
+    deviceInfo.ppEnabledExtensionNames = deviceExtensions;
+
+    checkVulkanResult(vkCreateDevice(context.physicalDevice, &queueCreateInfo, NULL, &context.device), "Couldn't create logical device");
+}
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) 
+{
+    fprintf(stderr, "validation layer: %s\n", pCallbackData->pMessage);
+    return VK_FALSE;
+}
+
+
+void checkVulkanResult(VkResult result, char* String)
+{
+    if (result != VK_SUCCESS)
+    {
+        printf("%s\n", String);
+        exit(0);
     }
 }
 
@@ -3266,7 +3552,7 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 1:
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                pixels[(160 * yPixel) + xPixel] = 0x294E52FF;
+                pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
                 //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
@@ -3277,13 +3563,13 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 0:
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                pixels[(160 * yPixel) + xPixel] = 0x427211FF;
+                pixels[(WIDTH * yPixel) + xPixel] = 0x427211FF;
                 //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                pixels[(160 * yPixel) + xPixel] = 0x102612FF;
+                pixels[(WIDTH * yPixel) + xPixel] = 0x102612FF;
                 //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
                 break;
             }
@@ -3300,13 +3586,13 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 0:
                 //white color
                 //SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                pixels[(160 * yPixel) + xPixel] = 0xDCFFDCFF;
+                pixels[(WIDTH * yPixel) + xPixel] = 0xDCFFDCFF;
                 //SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
                 break;
             case 1:
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                pixels[(160 * yPixel) + xPixel] = 0x294E52FF;
+                pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
                 //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
@@ -3317,13 +3603,13 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             case 0:
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                pixels[(160 * yPixel) + xPixel] = 0x427211FF;
+                pixels[(WIDTH * yPixel) + xPixel] = 0x427211FF;
                 //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                pixels[(160 * yPixel) + xPixel] = 0x102612FF;
+                pixels[(WIDTH * yPixel) + xPixel] = 0x102612FF;
                 //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
                 break;
             }
@@ -3572,7 +3858,7 @@ unsigned char readMemory(unsigned short memoryLocation)
         joypad();
         return memory[memoryLocation];
     }
-    else if (memoryLocation == (0xFF70 || 0xFF4F || 0xFF4D))
+    else if (memoryLocation == 0xFF70 || memoryLocation == 0xFF4F || memoryLocation == 0xFF4D)
     {
         return 0xFF;
     }
@@ -3834,10 +4120,23 @@ void joypad()
 
 void quitGame()
 {
+    //SDL
     SDL_DestroyWindow(window);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_Quit();
+
+    //Vulkan
+    vkDestroyDevice(context.device, NULL);
+    vkDestroySurfaceKHR(context.instance, context.surface, NULL);
+    vkDestroyInstance(context.instance, NULL);
+    //loading the vkDestroyDebugUtilsMessengerEXT Function
+    PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
+    *(void**)&vkDestroyDebugUtilsMessengerEXT = vkGetInstanceProcAddr(context.instance, "vkDestroyDebugUtilsMessengerEXT");
+    //using the vkDestroyDebugUtilsMessengerEXT function
+    vkDestroyDebugUtilsMessengerEXT(context.instance, context.debugMessenger, NULL);
+
+    //pixel array buffer
     free(pixels);
 }
 
