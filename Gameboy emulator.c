@@ -90,6 +90,12 @@ union registerHL
 
 struct vulkanContext{
 
+    unsigned long layerCount;
+    const char* layers;
+
+    unsigned long extensionsCount;
+    const char* extensions;
+
     unsigned long width;
     unsigned long height;
 
@@ -104,10 +110,18 @@ struct vulkanContext{
     unsigned long presentQueueIdx;
     VkQueue presentQueue;
 
+    VkSwapchainKHR swapChain;
+    VkImage* swapChainImages;
+    VkFormat swapChainFormat;
+    VkExtent2D swapChainExtent;
+
+    VkImageView* swapChainImageViews;
+
 }context;
 
 //cpu
-unsigned char memory[0xFFFF + 1] = { 0 };//65536 bytes 
+unsigned char memory[0xFFFF + 1] = { 0 }; //65536 bytes 
+unsigned char cartridgeMemory[0x3FFF * 128] = { 0 }; //2MB of memory cartridge
 unsigned short opcode;
 unsigned char LCDcontroller;
 //////////////////////////////////////////////////REGISTERS//////////////////////////////////////////////////////////////////////////////////////////////
@@ -139,6 +153,8 @@ unsigned char wholeScreen[256][256];
 //scanlineCounter uses a 16 bit variable to represent 456 clocks, so when it becomes lower than 0 it will wrap to 456;
 //everytime it wraps around we update the LY register ($ff44) by 1, the range of the LY register is 0-153;
 int scanlineCounter = 0x1c8;
+//modes of LCD
+unsigned char LCDMode;
 //cpu does 4194304 cycles in a second and it renders in 60FPS.
 const int maxCycleBeforeRender = CLOCKSPEED / 60;
 //how many cycles the cpu did in 1 milisecond
@@ -149,12 +165,27 @@ int timerCounter = CLOCKSPEED / FREQUENCY_00;
 int divCounter = CLOCKSPEED / FREQUENCY_11;
 //the cycles the divider register was on until now
 int dividerRegisterCycles = 0;
+unsigned char pixelFIFOBG[256][2] = {0};
 
 //interrupts and joypad
 bool masterInterrupt = false; //Interrupt Master Enable Flag - IME
 //when the cpu executes the enable interrupt instruction it will only take effect in the next instruction we need a delay to activate the IME
 bool delayMasterInterrupt = false; 
 unsigned char joypadKeys = 0xFF;
+
+//ram and MBC related parts
+bool isRamEnabled = false;
+bool MBC2Enabled = false;
+bool MBC1Enabled = false;
+
+unsigned char ramBankNumber = 0;
+//if false: ROM Banking Mode (up to 8KByte RAM, 2MByte ROM).   if true: RAM Banking Mode (up to 32KByte RAM, 512KByte ROM).
+bool RomRamSELECT = false;
+//the rom bank begins at 0x01 because rom bank 0 is the memory range 0x0000-0x3FFF of gameboy memory, 
+unsigned char romBankNumber = 0x01;
+//if we overflow the value it will wrap around. The max value is found 
+unsigned short maxRomBankNumber;
+
 
 //HALT
 bool halt = false;
@@ -170,6 +201,8 @@ unsigned char HEIGTH = 144;
 bool drawFlag = false;
 bool isRunning;
 
+//VULKAN
+
 //////////////////////////////////////////////////FUNCTIONS//////////////////////////////////////////////////////////////////////////////////////////////
 void print_binary(int number);
 //sdl and Vulkan
@@ -180,7 +213,15 @@ void createSurface();
 void setupDebugMessenger();
 void pickPhysicalDevice();
 void pickLogicalDevice();
+void getSwapChain();
+void createImageViews();
+void createGraphicsPipeline();
+/*void vkCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask,
+                          VkDependencyFlags dependencyFlags, unsigned long memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers,
+                          unsigned long bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
+                          const VkImageMemoryBarrier* pImageMemoryBarriers);*/
 void checkVulkanResult(VkResult result, char* String);
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
                                                     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
 int main(int argc, char* argv[]);
@@ -197,23 +238,35 @@ void orOperation(unsigned char* registerB, unsigned char cycles);
 void xorOperation(unsigned char* registerB, unsigned char cycles);
 void cpRegister(unsigned char* registerB, unsigned char cycles);
 void incRegister(unsigned char* registerA, unsigned char cycles);
+void incRegisterToMemory(unsigned short memoryLocation, unsigned char cycles);
 void decRegister(unsigned char* registerA, unsigned char cycles);
+void decRegisterToMemory(unsigned short memoryLocation, unsigned char cycles);
 void addRegister16Bit(unsigned short* registerA, unsigned short* registerB, unsigned char cycles);
 void swap(unsigned char* registerA, unsigned char cycles);
+void swapToMemory(unsigned short memoryLocation, unsigned char cycles);
 void rlcRegister(unsigned char* registerA, unsigned char cycles);
+void rlcRegisterToMemory(unsigned short memoryLocation, unsigned char cycles);
 void RLCA(unsigned char cycles);
 void rlRegister(unsigned char* registerA, unsigned char cycles);
+void rlRegisterToMemory(unsigned short memoryLocation, unsigned char cycles);
 void RLA(unsigned char cycles);
 void rrcRegister(unsigned char* registerA, unsigned char cycles);
+void rrcRegisterToMemory(unsigned short memoryLocation, unsigned char cycles);
 void RRCA(unsigned char cycles);
 void rrRegister(unsigned char* registerA, unsigned char cycles);
+void rrRegisterToMemory(unsigned short memoryLocation, unsigned char cycles);
 void RRA(unsigned char cycles);
 void SLA(unsigned char* registerA, unsigned char cycles);
+void SLAToMemory(unsigned short memoryLocation, unsigned char cycles);
 void SRA(unsigned char* registerA, unsigned char cycles);
+void SRAToMemory(unsigned short memoryLocation, unsigned char cycles);
 void SRL(unsigned char* registerA, unsigned char cycles);
+void SRLToMemory(unsigned short memoryLocation, unsigned char cycles);
 void BIT(unsigned char* registerA, unsigned char bit, unsigned char cycles);
 void SET(unsigned char* registerA, unsigned char bit, unsigned char cycles);
+void SETToMemory(unsigned short memoryLocation, unsigned char bit , unsigned char cycles);
 void RES(unsigned char* registerA, unsigned char bit, unsigned char cycles);
+void RESToMemory(unsigned short memoryLocation, unsigned char bit, unsigned char cycles);
 bool NZCondition();
 bool ZCondition();
 bool NCCondition();
@@ -246,6 +299,13 @@ void doHalt();
 void handleEvents();
 void makeJoypadInterrupt(bool directional, unsigned char bit);
 void joypad();
+void getMBC();
+void getMaxRomBankNumber();
+void getRamEnable(unsigned char data);
+void getRomBankNumber(unsigned char data);
+void RomRamBankNumber(unsigned char data);
+void RomRamModeSelect(unsigned char data);
+void memoryCopy(bool copyRam, bool copyRom, unsigned long newOffset, unsigned long oldOffset);
 void quitGame();
 
 int main(int argc, char* argv[])
@@ -255,6 +315,12 @@ int main(int argc, char* argv[])
     setupGraphics();
     setupVulkan();
     
+    //seeing what MBC bank is used.
+    if (memory[0x147] != 0)
+    {
+        getMBC();
+        getMaxRomBankNumber();
+    }
     pixels = (unsigned int*)malloc(sizeof(unsigned int) * (160 * 144));
     if (pixels == NULL)
     {
@@ -269,10 +335,13 @@ int main(int argc, char* argv[])
             handleEvents();
             emulateCycle();
             doInterrupts();
+            
         }    
         SDL_UpdateTexture(texture, NULL, pixels, 160 * sizeof(unsigned int));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
+        /*SDL_RenderPresent(renderer);
+        SDL_RenderClear(renderer);*/
     }
     void quitGame();
     //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
@@ -330,7 +399,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Dr. Mario (W) (V1.1).gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Super Mario Land (W) (V1.0) [!].gb", "rb");
     if (file == NULL) {
         printf("File not found");
         exit(EXIT_FAILURE);
@@ -340,25 +409,45 @@ void loadGame(char* gameName)
         //going to end of file
         fseek(file, 0, SEEK_END);
         //getting size of file
-        long bufferSize = ftell(file);
-        printf("file size: %d", bufferSize);
-        //SDL_Delay(2000);
+        unsigned long long bufferSize = ftell(file);
+        printf("file size: %lld", bufferSize);
+        rewind(file);
         if (bufferSize > (0xFFFF))
         {
-            printf("size of file is too big");
-            exit(EXIT_FAILURE);
+            printf("size of file is too big for gameboy, using cartridgeMemory\n");
+            char* inCartridge = ( char*)malloc(sizeof(char) * bufferSize);
+            if (inCartridge == NULL)
+            {
+                printf("Couldn't allocate inCartridge\n");
+                exit(EXIT_FAILURE);
+            }
+            unsigned long long cartridgeResult = fread(inCartridge, sizeof(char), bufferSize, file);
+            if (cartridgeResult != bufferSize)
+            {
+                printf("couldn't read file");
+                exit(0);
+            }
+
+            for (int i = 0; i < bufferSize; i++)
+            {
+                cartridgeMemory[i] = inCartridge[i];
+            }
+            free(inCartridge);
+            
+            //fitting the size of memory into the gameboy memory;
+            bufferSize = 0xFFFF;
         }
-        //going to beginning of file
         rewind(file);
+        //going to beginning of file
         //setting the size of char array and reading the binary file in unsigned char form
-        char* in = (char*)malloc(sizeof(char) * bufferSize);
+        char* in = (char*)malloc(sizeof( char) * bufferSize);
         if (in == NULL)
         {
             printf("out of memory\n");
             exit(EXIT_FAILURE);
         }
         //reading file
-        size_t result = fread(in, sizeof(unsigned char), bufferSize, file);
+        unsigned long long result = fread(in, sizeof(char), bufferSize, file);
         if (result != bufferSize)
         {
             printf("reading error\n");
@@ -372,6 +461,7 @@ void loadGame(char* gameName)
 
         fclose(file);
         free(in);
+        
     }
 }
 
@@ -409,52 +499,51 @@ void setupGraphics()
 
 void setupVulkan()
 {
+    context.width = 320;
+    context.height = 288;
+
     createVulkanInstance();
     createSurface();
     setupDebugMessenger();
     pickPhysicalDevice();
     pickLogicalDevice();
+    getSwapChain();
 }
 
 void createVulkanInstance()
 {
     
     //Informations about the APP
-    VkApplicationInfo appInfo = {
-        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        appInfo.pNext = NULL,
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
-        appInfo.pApplicationName = "GorodBoy",
-        appInfo.pEngineName = "No Engine",
-        appInfo.engineVersion = VK_MAKE_VERSION(1,0,0),
-        appInfo.apiVersion = VK_API_VERSION_1_0
-    };
+    //I'm not sure why we couldn't initialize between braces, = { appInfo.sType = ...}
+    VkApplicationInfo appInfo = { 0 };
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pNext = NULL;
+    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.pApplicationName = "GorodBoy";
+    appInfo.pEngineName = "No Engine";
+    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_0;
     
 
     //creating the info about the APP
-    VkInstanceCreateInfo createInfo = {
-        createInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        createInfo.pApplicationInfo = &appInfo,
-        createInfo.enabledLayerCount = 0,
-        createInfo.ppEnabledLayerNames = NULL,
-        createInfo.enabledExtensionCount = 0,
-        createInfo.ppEnabledExtensionNames = NULL,
-    };    
-
-    VkResult result;
-
+    VkInstanceCreateInfo createInfo = { 0 };
+    createInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+    createInfo.enabledLayerCount = 0;
+    createInfo.ppEnabledLayerNames = NULL;
+    createInfo.enabledExtensionCount = 0;
+    createInfo.ppEnabledExtensionNames = NULL;
+    
     //getting the list of all available layers that we have
     unsigned long layerCount = 0;
-    result = vkEnumerateInstanceLayerProperties(&layerCount, NULL);
-    checkVulkanResult(result, "Couldn't enumerate layer properties of instance");
+    checkVulkanResult(vkEnumerateInstanceLayerProperties(&layerCount, NULL), "Couldn't enumerate layer properties of instance");
     VkLayerProperties* layersAvailable = (VkLayerProperties*) malloc (layerCount * sizeof(VkLayerProperties));
     if (layersAvailable == NULL)
     {
         printf("Couldn't allocate layersAvailable");
         exit(0);
     }
-    result = vkEnumerateInstanceLayerProperties(&layerCount, layersAvailable);
-    checkVulkanResult(result, "Couldn't enumerate layer properties of instance");
+    checkVulkanResult(vkEnumerateInstanceLayerProperties(&layerCount, layersAvailable), "Couldn't enumerate layer properties of instance");
 
     //finding if the layer we want is on the list
     bool foundValidation = false;
@@ -477,6 +566,13 @@ void createVulkanInstance()
     createInfo.enabledLayerCount = numberRequiredLayers;
     createInfo.ppEnabledLayerNames = layers;
 
+    //saving to use later
+    //strlen does not include the NULL character in a string, so we add (+1 * numberRequiredLayers)
+    
+    context.layers = (const char*)malloc(numberRequiredLayers * sizeof(layers) + (1 * numberRequiredLayers));
+    context.layers = *layers;
+    context.layerCount = layerCount;
+
     //getting the list of all available extensions that we have
     unsigned long extensionCount = 0;
     vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, NULL);
@@ -489,7 +585,13 @@ void createVulkanInstance()
     vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, extensionsAvailable);
 
     //finding if the extensions we want is available
-    const char* extensions[] = { "VK_KHR_surface", "VK_EXT_debug_utils" };
+    const char* extensions[] = { "VK_KHR_surface", "VK_EXT_debug_utils", "VK_KHR_win32_surface" };
+    if (extensions == NULL)
+    {
+        printf("Couldn't allocate extensionsSDL");
+        exit(0);
+
+    }
     unsigned long numberRequiredExtensions = sizeof(extensions) / sizeof(char*);
     unsigned long foundExtensions = 0;
     for (unsigned long i = 0; i < extensionCount; ++i)
@@ -507,27 +609,17 @@ void createVulkanInstance()
         printf("found extensions doesn't match the required number of extensions");
         exit(0);
     }
+    //if it is, enable the extension
     createInfo.enabledExtensionCount = numberRequiredExtensions;
     createInfo.ppEnabledExtensionNames = extensions;
 
+    context.extensions = (const char*)malloc(numberRequiredLayers * sizeof(extensions) + (1 * numberRequiredExtensions));
+    context.extensions = *extensions;
+    context.extensionsCount = numberRequiredExtensions;
+
+    checkVulkanResult(vkCreateInstance(&createInfo, NULL, &context.instance), "Couldn't create vulkan instance");
     
-    result = vkCreateInstance(&createInfo, NULL, &context.instance);
-    checkVulkanResult(result, "Couldn't create vulkan instance");
-
-    //if it is, enable the extension
     
-
-    if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, NULL))
-    {
-        printf("Couldn't get instance extensions 1");
-        exit(0);
-    }
-
-    if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, extensions))
-    {
-        printf("Couldn't get instance extensions 2");
-        exit(0);
-    }
 }
 
 void createSurface()
@@ -541,20 +633,20 @@ void createSurface()
 
 void setupDebugMessenger()
 {
+
     //loading the vkDestroyDebugUtilsMessengerEXT Function
+    VkDebugUtilsMessengerCreateInfoEXT createInfo = { 0 };
+    
     PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
     *(void**)&vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr(context.instance, "vkCreateDebugUtilsMessengerEXT");
 
-    VkDebugUtilsMessengerCreateInfoEXT createInfo =
-    {
-        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-                                     | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-                                 | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-        createInfo.pfnUserCallback = &debugCallback,
-        createInfo.pUserData = NULL, // Optional
-    };
+    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT 
+                                 | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 
+                             | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.pfnUserCallback = debugCallback;
+    createInfo.pUserData = NULL;
     checkVulkanResult(vkCreateDebugUtilsMessengerEXT(context.instance, &createInfo, NULL, &context.debugMessenger), "Failed to setup debug messenger");
 }
 
@@ -617,29 +709,185 @@ void pickPhysicalDevice()
 
 void pickLogicalDevice()
 {
-    float queuePiorities[] = { 1.0f };
-    VkDeviceQueueCreateInfo queueCreateInfo = {
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        queueCreateInfo.queueFamilyIndex = context.presentQueueIdx,
-        queueCreateInfo.queueCount = 1,
-        queueCreateInfo.pQueuePriorities = queuePiorities,
-    };
+    VkDeviceQueueCreateInfo queueCreateInfo = { 0 };
+    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueCreateInfo.queueFamilyIndex = context.presentQueueIdx;
+    queueCreateInfo.queueCount = 1;
+    const float queuePriorities = 0.0f;
+    queueCreateInfo.pQueuePriorities = &queuePriorities;
 
-    VkPhysicalDeviceFeatures deviceFeatures;
-
-    VkDeviceCreateInfo deviceInfo = {
-        deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        deviceInfo.queueCreateInfoCount = 1,
-        deviceInfo.pQueueCreateInfos = &queueCreateInfo,
-        deviceInfo.pEnabledFeatures = &deviceFeatures,
-    };
+    VkDeviceCreateInfo deviceInfo = { 0 };
+    deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueCreateInfo;
+    deviceInfo.enabledLayerCount = 1;
+    deviceInfo.ppEnabledLayerNames = &context.layers;
 
     const char* deviceExtensions[] = { "VK_KHR_swapchain" };
     deviceInfo.enabledExtensionCount = 1;
     deviceInfo.ppEnabledExtensionNames = deviceExtensions;
 
-    checkVulkanResult(vkCreateDevice(context.physicalDevice, &queueCreateInfo, NULL, &context.device), "Couldn't create logical device");
+    VkPhysicalDeviceFeatures features = {0};
+    features.shaderClipDistance = VK_TRUE;
+    deviceInfo.pEnabledFeatures = &features;
+
+    checkVulkanResult(vkCreateDevice(context.physicalDevice, &deviceInfo, NULL, &context.device), "couldn't create logical device");
+    
+    //storing present queue
+    vkGetDeviceQueue(context.device, context.presentQueueIdx, 0, &context.presentQueue);
 }
+
+void getSwapChain()
+{
+    unsigned long formatCount = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(context.physicalDevice, context.surface, &formatCount, NULL);
+    VkSurfaceFormatKHR* surfaceFormats = (VkSurfaceFormatKHR*)malloc(formatCount * sizeof(VkSurfaceFormatKHR));
+    vkGetPhysicalDeviceSurfaceFormatsKHR(context.physicalDevice, context.surface, &formatCount, surfaceFormats);
+    if (surfaceFormats == NULL)
+    {
+        printf("couldn't allocate memory to surfaceFormats");
+        exit(0);
+    }
+    VkFormat colorFormat;
+    if (formatCount == 1 && surfaceFormats[0].format == VK_FORMAT_UNDEFINED) {
+        colorFormat = VK_FORMAT_B8G8R8_UNORM;
+    }
+    else 
+    {
+        colorFormat = surfaceFormats[0].format;
+    }
+    VkColorSpaceKHR colorSpace;
+    colorSpace = surfaceFormats[0].colorSpace;
+    
+
+    VkSurfaceCapabilitiesKHR surfaceCapabilities = {0};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context.physicalDevice, context.surface, &surfaceCapabilities);
+
+
+    unsigned long desiredImageCount = 2;
+    if (desiredImageCount < surfaceCapabilities.minImageCount)
+    {
+        desiredImageCount = surfaceCapabilities.minImageCount;
+    }
+    else if (surfaceCapabilities.minImageCount != 0 && desiredImageCount > surfaceCapabilities.maxImageCount)
+    {
+        desiredImageCount = surfaceCapabilities.maxImageCount;
+    }
+
+    VkExtent2D surfaceResolution = surfaceCapabilities.currentExtent;
+    if (surfaceResolution.width == -1)
+    {
+        surfaceResolution.width = context.width;
+        surfaceResolution.height = context.height;
+    }
+    else
+    {
+        context.width = surfaceResolution.width;
+        context.height = surfaceResolution.height;
+    }
+
+    VkSurfaceTransformFlagBitsKHR preTransform = surfaceCapabilities.currentTransform;
+    if (surfaceCapabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+    {
+        preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    }
+
+    unsigned long presentModeCount = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice, context.surface, &presentModeCount, NULL);
+    VkPresentModeKHR* presentModes = (VkPresentModeKHR*)malloc(presentModeCount * sizeof(VkPresentModeKHR));
+    if (presentModes == NULL)
+    {
+        printf("couldn't allocate memory to presentModes");
+        exit(0);
+    }
+    vkGetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice, context.surface, &presentModeCount, presentModes);
+
+    VkPresentModeKHR presentationMode = VK_PRESENT_MODE_FIFO_KHR;
+
+    for (unsigned long i = 0; i < presentModeCount; ++i)
+    {
+        if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+        {
+            presentationMode = VK_PRESENT_MODE_MAILBOX_KHR;
+            break;
+        }
+    }
+    free(presentModes);
+
+    VkSwapchainCreateInfoKHR swapChainCreateInfo = {0};
+    swapChainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapChainCreateInfo.surface = context.surface;
+    swapChainCreateInfo.minImageCount = desiredImageCount;
+    swapChainCreateInfo.imageFormat = colorFormat;
+    swapChainCreateInfo.imageColorSpace = colorSpace;
+    swapChainCreateInfo.imageArrayLayers = 1;
+    swapChainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapChainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapChainCreateInfo.preTransform = preTransform; // 90 degree rotation
+    swapChainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapChainCreateInfo.presentMode = presentationMode;
+    swapChainCreateInfo.clipped = VK_TRUE;
+    swapChainCreateInfo.pQueueFamilyIndices = NULL;
+    swapChainCreateInfo.imageExtent = surfaceResolution; // it doesnt work if we put it between the braces;
+
+    checkVulkanResult(vkCreateSwapchainKHR(context.device, &swapChainCreateInfo, NULL, &context.swapChain), "Couldn't create swapChain");
+
+    vkGetSwapchainImagesKHR(context.device, context.swapChain, &desiredImageCount, NULL);
+    context.swapChainImages = (VkImage*)malloc(desiredImageCount * sizeof(VkImage));
+    if (context.swapChainImages == NULL)
+    {
+        printf("couldn't create swapChainImages");
+        exit(0);
+    }
+    vkGetSwapchainImagesKHR(context.device, context.swapChain, &desiredImageCount, context.swapChainImages);
+
+    context.swapChainFormat = surfaceFormats->format;
+    context.swapChainExtent = surfaceResolution;
+    free(surfaceFormats);
+}
+
+void createImageViews()
+{
+    context.swapChainImageViews = (VkImageView*)malloc(sizeof(context.swapChainImages));
+    if (context.swapChainImageViews == NULL)
+    {
+        printf("Couldn't create swap chain image views");
+        exit(0);
+    }
+
+    unsigned int swapChainImagesSize = sizeof(context.swapChainImages) / sizeof(*context.swapChainImages);
+    for (unsigned int i = 0; i < swapChainImagesSize; i++)
+    {
+        VkImageViewCreateInfo createInfo = { 0 };
+        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        createInfo.image = context.swapChainImages[i];
+        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        createInfo.format = context.swapChainFormat;
+        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        createInfo.subresourceRange.baseMipLevel = 0;
+        createInfo.subresourceRange.levelCount = 1;
+        createInfo.subresourceRange.baseArrayLayer = 0;
+        createInfo.subresourceRange.layerCount = 1;
+        checkVulkanResult(vkCreateImageView(context.device, &createInfo, NULL, &context.swapChainImageViews[i]), "Couldn't create imageView");
+    }
+}
+
+void createGraphicsPipeline()
+{
+
+}
+
+/*void vkCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask,
+                          VkDependencyFlags dependencyFlags, unsigned long memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers,
+                          unsigned long bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
+                          const VkImageMemoryBarrier* pImageMemoryBarriers)
+{
+
+}*/
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) 
@@ -679,10 +927,12 @@ void emulateCycle()
     //pc == 0x294
     //pc == 0x0434
     //pc 0x231c -> register FF00 wrong value -> ff00 == joypad
-    //pc == 0x358
+    //pc == 0x16b
+    //pc == 0x131 && isRamEnabled == false
+    //pc == 0xff84. -> pc == 0x48d5
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
-    //printf("checking opcode: [%X], pc: [%X], LY: [%X], STAT:[%X], AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, memory[LY], memory[STAT], AF.AF, BC.BC, DE.DE, HL.HL);
+    //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, AF.AF, BC.BC, DE.DE, HL.HL);
     switch (opcode & 0xFF)
     {
         case 0x10:
@@ -1199,14 +1449,18 @@ void emulateCycle()
             addRegister(&AF.A, &HL.L, 4);
             break;
         case 0x86:
-            readMemory(HL.HL);
-            addRegister(&AF.A, &memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            addRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0xC6:
+        {
             pc++;
-            readMemory(pc);
-            addRegister(&AF.A, &memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            addRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0x8F:
             adcRegister(&AF.A, &AF.A, 4);
             break;
@@ -1229,14 +1483,18 @@ void emulateCycle()
             adcRegister(&AF.A, &HL.L, 4);
             break;
         case 0x8E:
-            readMemory(HL.HL);
-            adcRegister(&AF.A, &memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            adcRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0xCE:
+        {
             pc++;
-            readMemory(pc);
-            adcRegister(&AF.A, &memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            adcRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0x97:
             subRegister(&AF.A, &AF.A, 4);
             break;
@@ -1259,14 +1517,18 @@ void emulateCycle()
             subRegister(&AF.A, &HL.L, 4);
             break;
         case 0x96:
-            readMemory(HL.HL);
-            subRegister(&AF.A, &memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            subRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0xD6:
+        {
             pc++;
-            readMemory(pc);
-            subRegister(&AF.A, &memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            subRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0x9F:
             sbcRegister(&AF.A, &AF.A, 4);
             break;
@@ -1289,14 +1551,18 @@ void emulateCycle()
             sbcRegister(&AF.A, &HL.L, 4);
             break;
         case 0x9E:
-            readMemory(HL.HL);
-            sbcRegister(&AF.A, &memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            sbcRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0xDE:
+        {
             pc++;
-            readMemory(pc);
-            sbcRegister(&AF.A, &memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            sbcRegister(&AF.A, &readValue, 8);
             break;
+        }
         case 0xA7:
             andOperation(&AF.A, 4);
             break;
@@ -1319,14 +1585,18 @@ void emulateCycle()
             andOperation(&HL.L, 4);
             break;
         case 0xA6:
-            readMemory(HL.HL);
-            andOperation(&memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            andOperation(&readValue, 8);
             break;
+        }
         case 0xE6:
+        {
             pc++;
-            readMemory(pc);
-            andOperation(&memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            andOperation(&readValue, 8);
             break;
+        }
         case 0xB7:
             orOperation(&AF.A, 4);
             break;
@@ -1349,14 +1619,18 @@ void emulateCycle()
             orOperation(&HL.L, 4);
             break;
         case 0xB6:
-            readMemory(HL.HL);
-            orOperation(&memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            orOperation(&readValue, 8);
             break;
+        }
         case 0xF6:
+        {
             pc++;
-            readMemory(pc);
-            orOperation(&memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            orOperation(&readValue, 8);
             break;
+        }
         case 0xAF:
             xorOperation(&AF.A, 4);
             break;
@@ -1379,14 +1653,18 @@ void emulateCycle()
             xorOperation(&HL.L, 4);
             break;
         case 0xAE:
-            readMemory(HL.HL);
-            xorOperation(&memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            xorOperation(&readValue, 8);
             break;
+        }
         case 0xEE:
+        {
             pc++;
-            readMemory(pc);
-            xorOperation(&memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            xorOperation(&readValue, 8);
             break;
+        }
         case 0xBF:
             cpRegister(&AF.A, 4);
             break;
@@ -1409,15 +1687,18 @@ void emulateCycle()
             cpRegister(&HL.L, 4);
             break;
         case 0xBE:
-            readMemory(HL.HL);
-            cpRegister(&memory[HL.HL], 8);
+        {
+            unsigned char readValue = readMemory(HL.HL);
+            cpRegister(&readValue, 8);
             break;
+        }
         case 0xFE:
-            //pc != 0xc368
+        {
             pc++;
-            readMemory(pc);
-            cpRegister(&memory[pc], 8);
+            unsigned char readValue = readMemory(pc);
+            cpRegister(&readValue, 8);
             break;
+        }
         case 0x3C:
             incRegister(&AF.A, 4);
             break;
@@ -1440,8 +1721,7 @@ void emulateCycle()
             incRegister(&HL.L, 4);
             break;
         case 0x34:
-            readMemory(HL.HL);
-            incRegister(&memory[HL.HL], 12);
+            incRegisterToMemory(HL.HL, 12);
             break;
         case 0x3D:
             decRegister(&AF.A, 4);
@@ -1465,8 +1745,7 @@ void emulateCycle()
             decRegister(&HL.L, 4);
             break;
         case 0x35:
-            readMemory(HL.HL);
-            decRegister(&memory[HL.HL], 12);
+            decRegisterToMemory(HL.HL, 12);
             break;
         case 0x09:
             addRegister16Bit(&HL.HL, &BC.BC, 8);
@@ -1809,8 +2088,7 @@ void emulateCycle()
                     swap(&HL.L, 8);
                     break;
                 case 0x36:
-                    readMemory(HL.HL);
-                    swap(&memory[HL.HL], 16);
+                    swapToMemory(HL.HL, 16);
                     break;
                 case 0x07:
                     rlcRegister(&AF.A, 8);
@@ -1834,8 +2112,7 @@ void emulateCycle()
                     rlcRegister(&HL.L, 8);
                     break;
                 case 0x06:
-                    readMemory(HL.HL);
-                    rlcRegister(&memory[HL.HL], 16);
+                    rlcRegisterToMemory(HL.HL, 16);
                     break;
                 case 0x17:
                     rlRegister(&AF.A, 8);
@@ -1859,8 +2136,7 @@ void emulateCycle()
                     rlRegister(&HL.L, 8);
                     break;
                 case 0x16:
-                    readMemory(HL.HL);
-                    rlRegister(&memory[HL.HL],16);
+                    rlRegisterToMemory(HL.HL, 16);
                     break;
                 case 0x0F:
                     rrcRegister(&AF.A, 8);
@@ -1884,8 +2160,7 @@ void emulateCycle()
                     rrcRegister(&HL.L, 8);
                     break;
                 case 0x0E:
-                    readMemory(HL.HL);
-                    rrcRegister(&memory[HL.HL],16);
+                    rrcRegisterToMemory(HL.HL, 16);
                     break;
                 case 0x1F:
                     rrRegister(&AF.A, 8);
@@ -1909,8 +2184,7 @@ void emulateCycle()
                     rrRegister(&HL.L, 8);
                     break;
                 case 0x1E:
-                    readMemory(HL.HL);
-                    rrRegister(&memory[HL.HL], 16);
+                    rrRegisterToMemory(HL.HL, 16);
                     break;
                 case 0x27:
                     SLA(&AF.A, 8);
@@ -1934,8 +2208,7 @@ void emulateCycle()
                     SLA(&HL.L, 8);
                     break;
                 case 0x26:
-                    readMemory(HL.HL);
-                    SLA(&memory[HL.HL], 16);
+                    SLAToMemory(HL.HL, 16);
                     break;
                 case 0x2F:
                     SRA(&AF.A, 8);
@@ -1959,8 +2232,7 @@ void emulateCycle()
                     SRA(&HL.L, 8);
                     break;
                 case 0x2E:
-                    readMemory(HL.HL);
-                    SRA(&memory[HL.HL],16);
+                    SRAToMemory(HL.HL, 16);
                     break;
                 case 0x3F:
                     SRL(&AF.A, 8);
@@ -1984,8 +2256,7 @@ void emulateCycle()
                     SRL(&HL.L, 8);
                     break;
                 case 0x3E:
-                    readMemory(HL.HL);
-                    SRL(&memory[HL.HL],16);
+                    SRLToMemory(HL.HL, 16);
                     break;
                 case 0x47:
                     BIT(&AF.A, 0, 8);
@@ -2009,9 +2280,11 @@ void emulateCycle()
                     BIT(&HL.L, 0, 8);
                     break;
                 case 0x46:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 0, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 0, 16);
                     break;
+                }
                 case 0x4F:
                     BIT(&AF.A, 1, 8);
                     break;
@@ -2034,9 +2307,11 @@ void emulateCycle()
                     BIT(&HL.L, 1, 8);
                     break;
                 case 0x4E:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 1, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 1, 16);
                     break;
+                }
                 case 0x57:
                     BIT(&AF.A, 2, 8);
                     break;
@@ -2059,9 +2334,11 @@ void emulateCycle()
                     BIT(&HL.L, 2, 8);
                     break;
                 case 0x56:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 2, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 2, 16);
                     break;
+                }
                 case 0x5F:
                     BIT(&AF.A, 3, 8);
                     break;
@@ -2084,9 +2361,11 @@ void emulateCycle()
                     BIT(&HL.L, 3, 8);
                     break;
                 case 0x5E:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 3, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 3, 16);
                     break;
+                }
                 case 0x67:
                     BIT(&AF.A, 4, 8);
                     break;
@@ -2109,9 +2388,11 @@ void emulateCycle()
                     BIT(&HL.L, 4, 8);
                     break;
                 case 0x66:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 4, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 4, 16);
                     break;
+                }
                 case 0x6F:
                     BIT(&AF.A, 5, 8);
                     break;
@@ -2134,9 +2415,11 @@ void emulateCycle()
                     BIT(&HL.L, 5, 8);
                     break;
                 case 0x6E:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 5, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 6, 16);
                     break;
+                }
                 case 0x77:
                     BIT(&AF.A, 6, 8);
                     break;
@@ -2159,9 +2442,11 @@ void emulateCycle()
                     BIT(&HL.L, 6, 8);
                     break;
                 case 0x76:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 6, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 6, 16);
                     break;
+                };
                 case 0x7F:
                     BIT(&AF.A, 7, 8);
                     break;
@@ -2184,9 +2469,11 @@ void emulateCycle()
                     BIT(&HL.L, 7, 8);
                     break;
                 case 0x7E:
-                    readMemory(HL.HL);
-                    BIT(&memory[HL.HL], 7, 16);
+                {
+                    unsigned char readValue = readMemory(HL.HL);
+                    BIT(&readValue, 8, 16);
                     break;
+                }
                 case 0xC7:
                     SET(&AF.A, 0, 8);
                     break;
@@ -2209,8 +2496,7 @@ void emulateCycle()
                     SET(&HL.L, 0, 8);
                     break;
                 case 0xC6:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 0, 16);
+                    SETToMemory(HL.HL, 0, 16);
                     break;
                 case 0xCF:
                     SET(&AF.A, 1, 8);
@@ -2234,8 +2520,7 @@ void emulateCycle()
                     SET(&HL.L, 1, 8);
                     break;
                 case 0xCE:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 1, 16);
+                    SETToMemory(HL.HL, 1, 16);
                     break;
                 case 0xD7:
                     SET(&AF.A, 2, 8);
@@ -2259,8 +2544,7 @@ void emulateCycle()
                     SET(&HL.L, 2, 8);
                     break;
                 case 0xD6:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 2, 16);
+                    SETToMemory(HL.HL, 2, 16);
                     break; 
                 case 0xDF:
                     SET(&AF.A, 3, 8);
@@ -2284,8 +2568,7 @@ void emulateCycle()
                     SET(&HL.L, 3, 8);
                     break;
                 case 0xDE:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 3, 16);
+                    SETToMemory(HL.HL, 3, 16);
                     break;
                 case 0xE7:
                     SET(&AF.A, 4, 8);
@@ -2309,8 +2592,7 @@ void emulateCycle()
                     SET(&HL.L, 4, 8);
                     break;
                 case 0xE6:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 4, 16);
+                    SETToMemory(HL.HL, 4, 16);
                     break;
                 case 0xEF:
                     SET(&AF.A, 5, 8);
@@ -2334,8 +2616,7 @@ void emulateCycle()
                     SET(&HL.L, 5, 8);
                     break;
                 case 0xEE:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 5, 16);
+                    SETToMemory(HL.HL, 5, 16);
                     break;
                 case 0xF7:
                     SET(&AF.A, 6, 8);
@@ -2359,8 +2640,7 @@ void emulateCycle()
                     SET(&HL.L, 6, 8);
                     break;
                 case 0xF6:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 6, 16);
+                    SETToMemory(HL.HL, 6, 16);
                     break;
                 case 0xFF:
                     SET(&AF.A, 7, 8);
@@ -2384,8 +2664,7 @@ void emulateCycle()
                     SET(&HL.L, 7, 8);
                     break;
                 case 0xFE:
-                    readMemory(HL.HL);
-                    SET(&memory[HL.HL], 7, 16);
+                    SETToMemory(HL.HL, 7, 16);
                     break;
                 case 0x87:
                     RES(&AF.A, 0, 8);
@@ -2409,8 +2688,7 @@ void emulateCycle()
                     RES(&HL.L, 0, 8);
                     break;
                 case 0x86:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 0, 16);
+                    RESToMemory(HL.HL, 0, 16);
                     break;
                 case 0x8F:
                     RES(&AF.A, 1, 8);
@@ -2434,8 +2712,7 @@ void emulateCycle()
                     RES(&HL.L, 1, 8);
                     break;
                 case 0x8E:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 1, 16);
+                    RESToMemory(HL.HL, 1, 16);
                     break;
                 case 0x97:
                     RES(&AF.A, 2, 8);
@@ -2459,8 +2736,7 @@ void emulateCycle()
                     RES(&HL.L, 2, 8);
                     break;
                 case 0x96:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 2, 16);
+                    RESToMemory(HL.HL, 2, 16);
                     break;
                 case 0x9F:
                     RES(&AF.A, 3, 8);
@@ -2484,8 +2760,7 @@ void emulateCycle()
                     RES(&HL.L, 3, 8);
                     break;
                 case 0x9E:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 3, 16);
+                    RESToMemory(HL.HL, 3, 16);
                     break;
                 case 0xA7:
                     RES(&AF.A, 4, 8);
@@ -2509,8 +2784,7 @@ void emulateCycle()
                     RES(&HL.L, 4, 8);
                     break;
                 case 0xA6:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 4, 16);
+                    RESToMemory(HL.HL, 4, 16);
                     break;
                 case 0xAF:
                     RES(&AF.A, 5, 8);
@@ -2534,8 +2808,7 @@ void emulateCycle()
                     RES(&HL.L, 5, 8);
                     break;
                 case 0xAE:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 5, 16);
+                    RESToMemory(HL.HL, 5, 16);
                     break;
                 case 0xB7:
                     RES(&AF.A, 6, 8);
@@ -2559,8 +2832,7 @@ void emulateCycle()
                     RES(&HL.L, 6, 8);
                     break;
                 case 0xB6:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 6, 16);
+                    RESToMemory(HL.HL, 6, 16);
                     break;
                 case 0xBF:
                     RES(&AF.A, 7, 8);
@@ -2584,8 +2856,7 @@ void emulateCycle()
                     RES(&HL.L, 7, 8);
                     break;
                 case 0xBE:
-                    readMemory(HL.HL);
-                    RES(&memory[HL.HL], 7, 16);
+                    RESToMemory(HL.HL, 7, 16);
                     break;
                 default:
                     printf("opcode [%X] not found\n", opcode);
@@ -2855,6 +3126,28 @@ void incRegister(unsigned char* registerA, unsigned char cycles)
     }
 }
 
+void incRegisterToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+    //resetting N, Z and H flags
+    AF.F &= 0b00010000;
+    unsigned char registerA = readMemory(memoryLocation);
+    //check if the lower nibble is 0b1111 to see if it will carry from bit 3. if it carries, set flag H;
+    if ((registerA & 0xF) == 0xF)
+    {
+        AF.F |= 0b00100000;
+    }
+
+    //increments register
+    registerA += 1;
+    //if it overflows, set flag Z;
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+    writeInMemory(memoryLocation, registerA);
+}
+
 void decRegister(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
@@ -2882,6 +3175,37 @@ void decRegister(unsigned char* registerA, unsigned char cycles)
     {
         AF.F &= 0b01110000;
     }
+}
+
+void decRegisterToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+    //setting N flag
+    AF.F |= 0b01000000;
+
+    unsigned char registerA = readMemory(memoryLocation);
+    //check if the lower nibble is 0b0000 to see if it will borrow from bit 4. if it carries, set flag H;
+    if ((registerA & 0xF) == 0)
+    {
+        AF.F |= 0b00100000;
+    }
+    //if it doesnt carry, reset flag
+    else
+    {
+        AF.F &= 0b11010000;
+    }
+    //decrements register
+    registerA -= 1;
+    //if the result is 0, set flag Z
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+    else
+    {
+        AF.F &= 0b01110000;
+    }
+    writeInMemory(memoryLocation, registerA);
 }
 
 void addRegister16Bit(unsigned short* registerA, unsigned short* registerB, unsigned char cycles)
@@ -2936,6 +3260,26 @@ void swap(unsigned char* registerA, unsigned char cycles)
     }
 }
 
+void swapToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+    AF.F = 0;
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    if (registerA == 0)
+    {
+        //set Z flag
+        AF.F |= 0b10000000;
+    }
+    else
+    {
+        //swap lower nibble with upper nibble
+        registerA = ((registerA & 0x0F) << 4) | ((registerA & 0xF0) >> 4);
+    }
+    writeInMemory(memoryLocation, registerA);
+}
+
 void rlcRegister(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
@@ -2955,6 +3299,32 @@ void rlcRegister(unsigned char* registerA, unsigned char cycles)
     {
         AF.F |= 0b10000000;
     }
+}
+
+void rlcRegisterToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    //storing the seventh bit of registerA
+    unsigned char seventhBit = (registerA & 0b10000000);
+    //copying the seventh bit of registerA to carry flag
+    AF.F = ((seventhBit >> 3) | (AF.F & 0b11100000));
+    //rotating registerA to the left
+    registerA <<= 1;
+    //setting bit 0 to the previous seventh bit
+    registerA |= (seventhBit >> 7);
+
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
+    //if result of rotation is 0, set Z flag
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+    
+    writeInMemory(memoryLocation, registerA);
 }
 
 void RLCA(unsigned char cycles)
@@ -2991,6 +3361,32 @@ void rlRegister(unsigned char* registerA, unsigned char cycles)
     {
         AF.F |= 0b10000000;
     }
+}
+
+void rlRegisterToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    //storing the carry flag
+    unsigned char CFlag = (AF.F & 0b00010000);
+    //copying the seventh bit of registerA to carry flag
+    AF.F = (((registerA & 0b10000000) >> 3) | (AF.F & 0b11100000));
+    //rotating registerA to the left
+    registerA <<= 1;
+    //setting bit 0 to previous carry flag
+    registerA |= (CFlag >> 4);
+
+    //resetting N and H flags
+    AF.F &= 0b00010000;
+    //if result of rotation is 0, set Z flag
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+
+    writeInMemory(memoryLocation, registerA);
 }
 
 void RLA(unsigned char cycles)
@@ -3030,6 +3426,32 @@ void rrcRegister(unsigned char* registerA, unsigned char cycles)
     }
 }
 
+void rrcRegisterToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    //storing the zeroth bit of registerA
+    unsigned char zerothBit = (registerA & 0b00000001);
+    //copying the zeroth bit of registerA to carry flag
+    AF.F = ((zerothBit << 4) | (AF.F & 0b11100000));
+    //rotating registerA to the right
+    registerA >>= 1;
+    //setting bit 7 to the previous zeroth bit
+    registerA |= (zerothBit << 7);
+
+    //resetting N and H flags
+    AF.F &= 0b00010000;
+    //if result of rotation is 0, set Z flag
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+
+    writeInMemory(memoryLocation, registerA);
+}
+
 void RRCA(unsigned char cycles)
 {
     clockTiming(cycles);
@@ -3067,6 +3489,32 @@ void rrRegister(unsigned char* registerA, unsigned char cycles)
     }
 }
 
+void rrRegisterToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    //storing the carry flag
+    unsigned char CFlag = (AF.F & 0b00010000);
+    //copying the zeroth bit of registerA to carry flag
+    AF.F = (((registerA & 0b00000001) << 4) | (AF.F & 0b11100000));
+    //rotating registerA to the right
+    registerA >>= 1;
+    //setting bit 7 to the previous carry flag
+    registerA |= (CFlag << 3);
+
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
+    //if result of rotation is 0, set Z flag
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+
+    writeInMemory(memoryLocation, registerA);
+}
+
 void RRA(unsigned char cycles)
 {
     clockTiming(cycles);
@@ -3100,6 +3548,29 @@ void SLA(unsigned char* registerA, unsigned char cycles)
     }
 }
 
+void SLAToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    //copying the seventh bit of registerA to carry flag
+    AF.F = (((registerA & 0b10000000) >> 3) | (AF.F & 0b11100000));
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
+
+    //shifting bits to the left
+    registerA <<= 1;
+
+    //if result of rotation is 0, set Z flag
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+
+    writeInMemory(memoryLocation, registerA);
+}
+
 void SRA(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
@@ -3120,6 +3591,31 @@ void SRA(unsigned char* registerA, unsigned char cycles)
     }
 }
 
+void SRAToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    clockTiming(cycles);
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    //copying the zeroth bit of registerA to carry flag
+    AF.F = (((registerA & 0b00000001) << 4) | (AF.F & 0b11100000));
+
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
+
+    registerA >>= 1;
+
+    //copying the old MSB to the MSB position
+    registerA |= ((registerA & 0b01000000) << 1);
+
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+
+    writeInMemory(memoryLocation, registerA);
+}
+
 void SRL(unsigned char* registerA, unsigned char cycles)
 {
     clockTiming(cycles);
@@ -3132,6 +3628,24 @@ void SRL(unsigned char* registerA, unsigned char cycles)
     {
         AF.F |= 0b10000000;
     }
+}
+
+void SRLToMemory(unsigned short memoryLocation, unsigned char cycles)
+{
+    unsigned char registerA = readMemory(memoryLocation);
+
+    clockTiming(cycles);
+    //copying the zeroth bit of registerA to carry flag
+    AF.F = (((registerA & 0b00000001) << 4) | (AF.F & 0b11100000));
+    //resetting N and H and Z flags
+    AF.F &= 0b00010000;
+    registerA >>= 1;
+    if (registerA == 0)
+    {
+        AF.F |= 0b10000000;
+    }
+
+    writeInMemory(memoryLocation, registerA);
 }
 
 void BIT(unsigned char* registerA, unsigned char bit, unsigned char cycles)
@@ -3163,6 +3677,18 @@ void SET(unsigned char* registerA, unsigned char bit, unsigned char cycles)
     *registerA |= ((0b00000001) << bit);
 }
 
+void SETToMemory(unsigned short memoryLocation, unsigned char bit, unsigned char cycles)
+{
+    clockTiming(cycles);
+    //getting the value of b, b is the position of the bit that needs to be set, b = 0 - 7;
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    registerA |= ((0b00000001) << bit);
+
+    writeInMemory(memoryLocation, registerA);
+}
+
 void RES(unsigned char* registerA, unsigned char bit, unsigned char cycles)
 {
     clockTiming(cycles);
@@ -3170,6 +3696,18 @@ void RES(unsigned char* registerA, unsigned char bit, unsigned char cycles)
 
     *registerA &= ~(1 << bit);
 
+}
+
+void RESToMemory(unsigned short memoryLocation, unsigned char bit, unsigned char cycles)
+{
+    clockTiming(cycles);
+    //getting the value of b, b is the position of the bit that needs to be reset, b = 0 - 7;
+
+    unsigned char registerA = readMemory(memoryLocation);
+
+    registerA &= ~(1 << bit);
+
+    writeInMemory(memoryLocation, registerA);
 }
 
 bool NZCondition()
@@ -3342,11 +3880,10 @@ void clockTiming(unsigned char cycles)
         //if bit 2 is 1, the clocks are active and will change values
         if (testBit(memory[LCDC], 7))
         {
+            unsigned char scanlineUnderflow = cycles - scanlineCounter;
             scanlineCounter -= cycles;
-            if (scanlineCounter <= 0)
+            if (scanlineCounter <= 0 )
             {
-                memory[LY]++;
-                scanlineCounter = 456;
                 if (memory[LY] == 144)
                 {
                     requestInterrupt(0);
@@ -3358,8 +3895,11 @@ void clockTiming(unsigned char cycles)
                 }
                 else if (memory[LY] <= 143)
                 {
-                    drawScanLine();             
+                    drawScanLine();
                 }  
+                memory[LY]++;
+                scanlineCounter = 456;
+                scanlineCounter -= scanlineUnderflow;
             }
         }
     }
@@ -3414,18 +3954,23 @@ void renderTiles()
     unsigned char LSB = 0;//less significant bit
     unsigned char lineOfTile[2];
     unsigned short memoryPosition;
+
+    unsigned char ScrollY = memory[0xFF42];
+    unsigned char ScrollX = memory[0xFF43];
     //in the BG map tile numbers every byte contains the number of the tile (position of tile in memory) to be displayed in a 32*32 grid, 
     //every tile hax 8*8 pixels, totaling 256*256 pixels that is drawn to the screen.
     //printf("%x", (0x9800) + (32 * y));
     for (int x = 0; x < 20; x++)
     {
+        unsigned char xPos = ((x + ((ScrollX) /8) & 0x1F));
+        unsigned char yPos = ((memory[LY] + ScrollY) & 255);
         if (unsign)
         {
-            tileNumber = memory[((locationOfTileNumber)+x) + ((memory[LY] / 8) * 32)];
+            tileNumber = memory[((locationOfTileNumber)+xPos) + ((yPos/8)* 32)];
         }
         else
         {
-            tileNumber = (signed char) memory[((locationOfTileNumber)+x) + ((memory[LY] / 8) * 32)];
+            tileNumber = (signed char)memory[((locationOfTileNumber)+xPos) + ((yPos/8) * 32)];
         }
         //printf("tileNumber: %X   lineOfTile[0]: ", tileNumber);
 
@@ -3442,12 +3987,20 @@ void renderTiles()
             tileNumber += 128;
             tileLocation += tileNumber * 16;
         }
-        memoryPosition =  tileLocation + ((memory[LY] % 8) * 2);
+
+        unsigned short bytePos = ((yPos%8) *2);
+        memoryPosition =  tileLocation + (bytePos);
         lineOfTile[0] = memory[memoryPosition];
         //printf("%X", 0x8000 + (tileNumber * 10) + (2 * yPixel));
         //getting second byte of the line
-        memoryPosition = tileLocation + 1 + ((memory[LY] % 8) * 2);
+        memoryPosition = tileLocation + 1 + (bytePos);
         lineOfTile[1] = memory[memoryPosition];
+
+        /*MSB = (lineOfTile[1] & (0b10000000 >> (x % 8)));
+        MSB >>= (7 - (x%8));
+        LSB = (lineOfTile[0] & (0b10000000 >> (x % 8)));
+        LSB >>= (7 - (x % 8));
+        colorPallete(MSB, LSB, x, memory[LY], false);*/
         for (int xPixel = 0; xPixel < 8; xPixel++)
         {
             MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
@@ -3466,21 +4019,22 @@ void renderSprites()
     {
         unsigned char spriteBytes[4] = {0};
         unsigned short memoryLocation;
-        unsigned char tileNumber;
+        unsigned short tileNumber;
         
         for (int x = 0; x < 40; x++)
         {
-            //
+            unsigned short byteStartPoint = 0xFE00 + (x << 2);
             for (int bytes = 0; bytes < 4; bytes++)
             {
-                memoryLocation = 0xFE00 + (x * 4) + bytes;
+                memoryLocation = byteStartPoint + bytes;
                 spriteBytes[bytes] = memory[memoryLocation];
             }
+            unsigned char spriteBytes0Minus16 = spriteBytes[0] - 16;
             //if it isnt in this value range, the sprite will be hidden so we don't need to draw it in this frame.
-            if ((spriteBytes[0] - 16) > 0 && (spriteBytes[0] - 16) < 160)
+            if (spriteBytes0Minus16 > 0 && spriteBytes0Minus16 < 160)
             {
                 unsigned char yPixel = 0;
-                while ((spriteBytes[0] - 16 + yPixel) <= memory[LY] && yPixel != 8)
+                while ((spriteBytes0Minus16 + yPixel) <= memory[LY] && yPixel != 8)
                 {
                     unsigned char MSB = 0;//most significant bit
                     unsigned char LSB = 0;//less significant bit
@@ -3488,10 +4042,11 @@ void renderSprites()
                     unsigned char xPosition = spriteBytes[1];
                     unsigned char yPosition = memory[LY]  - spriteBytes[0];
 
-                    tileNumber = spriteBytes[2];
-                    memoryLocation = 0x8000 + (tileNumber * 16) +  (yPixel * 2);
+                    tileNumber = (0x8000 + (spriteBytes[2] << 4));
+                    unsigned short yPixelX2 = yPixel << 1;
+                    memoryLocation = (tileNumber) +  (yPixelX2);
                     lineOfTile[0] = memory[memoryLocation];
-                    memoryLocation = 0x8000 + (tileNumber * 16) + (yPixel * 2) + 1;
+                    memoryLocation = (tileNumber) + (yPixelX2) + 1;
                     lineOfTile[1] = memory[memoryLocation];
 
                     for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
@@ -3506,11 +4061,11 @@ void renderSprites()
                             //flip horizontaly
                             if (testBit(spriteBytes[3], 6))
                             {
-                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), ((spriteBytes[0] + yPixel) - 16), true);
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel) , true);
                             }
                             else
                             {
-                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), ((spriteBytes[0] + yPixel) - 16), true);
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
                             }
                             
                         }
@@ -3522,11 +4077,11 @@ void renderSprites()
                             LSB >>= (7 - xPixel);
                             if (testBit(spriteBytes[3], 6))
                             {
-                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), ((spriteBytes[0] + yPixel) - 16), true);
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
                             }
                             else
                             {
-                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), ((spriteBytes[0] + yPixel) - 16), true);
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
                             }
                         }
                     }
@@ -3616,7 +4171,9 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
             break;
         }
     }
+    
     //SDL_RenderDrawPoint(renderer, xPixel, yPixel);
+    
 }
 
 void setLCDSTAT()
@@ -3654,7 +4211,7 @@ void setLCDSTAT()
         {
             mode = 3;
             SET(&memory[STAT], 1, 0);
-            SET(&memory[STAT], 0, 0);
+            SET(&memory[STAT], 0, 0);  
         }
         else
         {
@@ -3730,21 +4287,13 @@ void doInterrupts()
         {
             unsigned char interruptsRequested = memory[IF];
             unsigned char interruptsEnabled = memory[IE];
-            switch (interruptsEnabled & interruptsRequested)
+            unsigned char interruptTest = memory[IF] & memory[IE];
+            for (int i = 0; i < 5; i++)
             {
-            case 0b00000001:
-                
-                setInterruptAddress(0);
-                break;
-            case 0b00000010:
-                setInterruptAddress(1);
-                break;
-            case 0b00000100:
-                setInterruptAddress(2);
-                break;
-            case 0b00010000:
-                setInterruptAddress(4);
-                break;
+                if (testBit(interruptTest, i))
+                {
+                    setInterruptAddress(i);
+                }
             }
         }
     }
@@ -3787,9 +4336,52 @@ void setInterruptAddress(unsigned char bit)
 
 void writeInMemory(unsigned short memoryLocation, unsigned char data)
 {
-    if (memoryLocation <= 0x8000)
+    //this memory location is read only, we can write to specific memory locations to enable things of the MBC, but the values doesn't go through, 
+    //it is intercepted and then interpreted by the MBC.
+    if (memoryLocation < 0x8000)
     {
-        //this memory location is read only
+        if (memory[0x147] != 0)
+        {
+            if (memoryLocation <= 0x1FFF)
+            {
+                getRamEnable(data);
+            }
+            else if (memoryLocation <= 0x3FFF)
+            {
+                getRomBankNumber(data);
+            }
+            else if (memoryLocation <= 0x5FFF)
+            {
+                RomRamBankNumber(data);
+            }
+            else if (memoryLocation <= 0x7FFF)
+            {
+                RomRamModeSelect(data);
+            }
+        }
+    }
+    else if (memoryLocation >= 0xA000 && memoryLocation <= 0xBFFF)
+    {
+        if (isRamEnabled)
+        {
+            if (MBC1Enabled)
+            {
+                if (ramBankNumber == 0)
+                {
+                     cartridgeMemory[memoryLocation] = data;
+                     memory[memoryLocation] = data;
+                     return;
+                }
+                cartridgeMemory[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)] = data;
+                //memory[memoryLocation] = data;
+                //cartridgeMemory[(memoryLocation - 0xA000) + (ramBankNumber * 0xA000)] = data;
+            }
+            else if (MBC2Enabled)
+            {
+                unsigned char memoryData = (data & 0x0F);
+                memory[memoryLocation] = memoryData;
+            }
+        }
     }
     else if ((memoryLocation >= 0xFEA0) && (memoryLocation <= 0xFEFF))
     {
@@ -3852,38 +4444,71 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
 
 unsigned char readMemory(unsigned short memoryLocation)
 {
-
+    if (memoryLocation >= 0xA000 && memoryLocation <= 0xBFFF)
+    {
+        if (isRamEnabled)
+        {
+            if (MBC1Enabled)
+            {
+                if (ramBankNumber == 0)
+                {
+                    return cartridgeMemory[memoryLocation];
+                }
+                return cartridgeMemory[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)];
+            }
+            if (MBC2Enabled)
+            {
+                unsigned char data = (memory[(memoryLocation - 0xA000) + (ramBankNumber * 0xA000)] & 0x0F);
+                data |= 0xF0;
+                return data;
+            }
+        }
+        else
+        {
+            return 0xFF;
+        }
+    }
+    if (memoryLocation >= 0x4000 && memoryLocation <= 0x7FFF)
+    {
+        if (romBankNumber == 0x01)
+        {
+            return memory[memoryLocation];
+        }
+        else
+        {
+            return cartridgeMemory[(memoryLocation - 0x4000) + (romBankNumber * 0x4000)];
+        }
+    }
     if (memoryLocation == 0xFF00)
     {
         joypad();
         return memory[memoryLocation];
     }
-    else if (memoryLocation == 0xFF70 || memoryLocation == 0xFF4F || memoryLocation == 0xFF4D)
+    if (memoryLocation == 0xFF70 || memoryLocation == 0xFF4F || memoryLocation == 0xFF4D)
     {
         return 0xFF;
     }
-    else if (memoryLocation == TMC)
+    if (memoryLocation == TMC)
     {
         unsigned char data = 0b11111000;
         data |= memory[TMC];
         return data;
     }
-    else if (memoryLocation == 0xFF0F)
+    if (memoryLocation == 0xFF0F)
     {
         unsigned char data = 0b11100000;
         data |= memory[0xFF0F];
         return data;
     }
-    else if (memoryLocation == STAT)
+    if (memoryLocation == STAT)
     {
         unsigned char data = 0b10000000;
         data |= memory[STAT];
         return data;
     }
-    else
-    {
-        return memory[memoryLocation];
-    }
+    
+    return memory[memoryLocation];
+
 }
 
 void setClockFrequency()
@@ -3930,6 +4555,7 @@ void doHalt()
     //halt has 2 possible interactions with the IME, if it is true then HALT is executed normally, cpu will stop executing instructions until an
     //interrupt is enabled and requested. When that happens the adress next to the HALT instruction is pushed onto the stack and the CPU will jump
     //to the interrupt adress. The IF flag of the interrupt is reset.
+    
     if (masterInterrupt)
     {
         //it needs to be set true because we will check for it in the interrupt function and if it is true it will take 4 more cycles to complete.
@@ -3938,11 +4564,21 @@ void doHalt()
         {
             while ((memory[IE] & memory[IF] & 0x1F) == 0)
             {
+                if (scanlineCounter  >= 114 && divCounter >= 114)
+                {
+                    clockTiming(114);
+                }
+                else
+                {
+                    clockTiming(4);
+                }
                 //increasing clock cycle by 4 until an interrupt is made;
-                clockTiming(4);
             }
         }
-
+        else
+        {
+            clockTiming(4);
+        }
     }
     //if IME is false, it tests for 2 possible interactions. 
     //(IE & IF & 0x1F) = 0, it waits for an interrupt but doesnt jump or resets the flag, it just continues to the next instruction.
@@ -3951,10 +4587,18 @@ void doHalt()
     {
         if ((memory[IE] & memory[IF] & 0x1F) == 0)
         {
+            halt = true;
             while ((memory[IE] & memory[IF] & 0x1F) == 0)
             {
                 //increasing clock cycle by 4 until an interrupt is made;
-                clockTiming(4);
+                if (scanlineCounter >= 114 && divCounter >= 114)
+                {
+                    clockTiming(114);
+                }
+                else
+                {
+                    clockTiming(4);
+                }
             }
             //it takes 4 clock cycles to exit HALT mode after an interrupt is made.
             clockTiming(4);
@@ -3969,6 +4613,7 @@ void doHalt()
             pc-=2;
         }
     }
+    halt = false;
 }
 
 void handleEvents()
@@ -4118,6 +4763,187 @@ void joypad()
     }
 }
 
+void getMBC()
+{
+    if (memory[0x147] <= 3)
+    {
+        MBC1Enabled = true;
+        return;
+    }
+    MBC2Enabled = true;
+    return;
+}
+
+void getMaxRomBankNumber()
+{
+    switch (memory[0x148])
+    {
+    case 0x00:
+        maxRomBankNumber = 0;
+        break;
+    case 0x01:
+        maxRomBankNumber = 4;
+        break;
+    case 0x02:
+        maxRomBankNumber = 8;
+        break;
+    case 0x03:
+        maxRomBankNumber = 16;
+        break;
+    case 0x04:
+        maxRomBankNumber = 32;
+        break;
+    case 0x05:
+        maxRomBankNumber = 64;
+        break;
+    case 0x06:
+        maxRomBankNumber = 128;
+        break;
+    case 0x07:
+        maxRomBankNumber = 256;
+        break;
+    case 0x08:
+        maxRomBankNumber = 512;
+        break;
+    case 0x52:
+        maxRomBankNumber = 72;
+        break;
+    case 0x53:
+        maxRomBankNumber = 80;
+        break;
+    case 0x54:
+        maxRomBankNumber = 96;
+        break;
+    default:
+        break;
+    }
+}
+
+void getRamEnable(unsigned char data)
+{
+    if (MBC2Enabled)
+    {
+        if (testBit(data, 4))
+        {
+            return;
+        }
+    }
+    if ((data & 0x0F) == 0x0A)
+    {
+        isRamEnabled = true;
+    }
+    else
+    {
+        isRamEnabled = false;
+    }  
+}
+
+void getRomBankNumber(unsigned char data)
+{
+    //storing bits 6 and 7 of romBankNumber
+
+    if (MBC2Enabled)
+    {
+        if (!testBit(data, 4))
+        {
+            return;
+        }
+    }
+    unsigned char oldBankNumber = romBankNumber;
+    unsigned char upperBits = (romBankNumber & 0x60);
+    romBankNumber = (data & 0x1F);
+    if ((romBankNumber & 0x1F) == 0)
+    {
+        romBankNumber = 0x01;
+    }
+    if (!RomRamSELECT)
+    {
+        romBankNumber |= upperBits;
+    }
+    if (romBankNumber > maxRomBankNumber)
+    {
+        romBankNumber = (romBankNumber % maxRomBankNumber);
+    }
+    if (oldBankNumber != romBankNumber)
+    {
+        memoryCopy(false, true, (0x4000 * romBankNumber), (0x4000 * oldBankNumber));
+    }
+}
+
+void RomRamBankNumber(unsigned char data)
+{
+    if (MBC2Enabled)
+    {
+        return;
+    }
+    //select the ram bank and resets bit 5 and 6 of romBankNumber
+    if (RomRamSELECT)
+    {
+        unsigned char oldRamBankNumber = ramBankNumber;
+        ramBankNumber = (data & 0x03);
+        if (oldRamBankNumber != ramBankNumber)
+        {
+            if (ramBankNumber == 0)
+            {
+                memoryCopy(true, false, 0xA000, (oldRamBankNumber * 0x2000));
+            }
+            else
+            {
+                if (oldRamBankNumber == 0)
+                {
+                    memoryCopy(true, false, (0x2000 * ramBankNumber), 0xA000);
+                }
+                else
+                {
+                    memoryCopy(true, false, (0x2000 * ramBankNumber), (0x2000 * oldRamBankNumber));
+                }
+            }
+        }
+    }
+    else
+    {
+        unsigned char oldBankNumber = romBankNumber;
+        unsigned char upperBits = ((data & 0x03) << 5);
+        romBankNumber &= (upperBits | 0x1F);
+        if (romBankNumber > maxRomBankNumber)
+        {
+            romBankNumber = (romBankNumber % maxRomBankNumber);
+        }
+        if (oldBankNumber != romBankNumber)
+        {
+            memoryCopy(false, true, (0x4000 * romBankNumber), (0x4000 * oldBankNumber));
+        }
+    }
+}
+
+void RomRamModeSelect(unsigned char data)
+{
+    if (testBit(data, 0))
+    {
+        RomRamSELECT = true;
+        unsigned char oldBankNumber = romBankNumber;
+        romBankNumber &= 0x1F;
+        if (romBankNumber == 0)
+        {
+            romBankNumber = 0x01;
+        }
+        if (oldBankNumber != romBankNumber)
+        {
+            memoryCopy(false, true, (0x4000 * romBankNumber), (0x4000 * oldBankNumber));
+        }
+    }
+    else
+    {
+        RomRamSELECT = false;
+        unsigned char oldRamBankNumber = ramBankNumber;
+        ramBankNumber = 0;
+        if (oldRamBankNumber != ramBankNumber)
+        {
+            memoryCopy(true, false, 0xA000, (oldRamBankNumber * 0x2000));
+        }
+    }
+}
+
 void quitGame()
 {
     //SDL
@@ -4127,17 +4953,46 @@ void quitGame()
     SDL_Quit();
 
     //Vulkan
+    unsigned int swapChainImagesSize = sizeof(context.swapChainImages) / sizeof(*context.swapChainImages);
+    for (unsigned int i = 0; i < swapChainImagesSize; i++)
+    {
+        vkDestroyImageView(context.device, context.swapChainImageViews[i], NULL);
+    }
     vkDestroyDevice(context.device, NULL);
     vkDestroySurfaceKHR(context.instance, context.surface, NULL);
     vkDestroyInstance(context.instance, NULL);
     //loading the vkDestroyDebugUtilsMessengerEXT Function
+    //using the vkDestroyDebugUtilsMessengerEXT function
     PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
     *(void**)&vkDestroyDebugUtilsMessengerEXT = vkGetInstanceProcAddr(context.instance, "vkDestroyDebugUtilsMessengerEXT");
-    //using the vkDestroyDebugUtilsMessengerEXT function
     vkDestroyDebugUtilsMessengerEXT(context.instance, context.debugMessenger, NULL);
-
+    
+    
     //pixel array buffer
     free(pixels);
+}
+
+void memoryCopy(bool copyRam, bool copyRom, unsigned long newOffset, unsigned long oldOffset)
+{
+    unsigned char tempValue;
+    if (copyRom)
+    {
+        for (unsigned int i = 0; i <= 0x3FFF; i++)
+        {
+            //tempValue = memory[0x4000 + i];
+            memory[0x4000 + i] = cartridgeMemory[newOffset + i];
+            // cartridgeMemory[oldOffset + i] = tempValue;
+        }
+    }
+    /*else if (copyRam)
+    {
+        for (unsigned int i = 0; i <= 0x1FFF; i++)
+        {
+            //tempValue = memory[0xA000 + i];
+            memory[0xA000 + i] = cartridgeMemory[newOffset + i];
+            //cartridgeMemory[oldOffset + i] = tempValue;
+        }
+    }*/
 }
 
 void print_binary(int number)
