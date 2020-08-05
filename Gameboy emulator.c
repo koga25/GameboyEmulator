@@ -177,7 +177,10 @@ unsigned char joypadKeys = 0xFF;
 bool isRamEnabled = false;
 bool MBC2Enabled = false;
 bool MBC1Enabled = false;
+bool MBC3Enabled = false;
 
+//we will assign the ram the total ram in according to the total ram banks later.
+unsigned char* ram;
 unsigned char ramBankNumber = 0;
 //if false: ROM Banking Mode (up to 8KByte RAM, 2MByte ROM).   if true: RAM Banking Mode (up to 32KByte RAM, 512KByte ROM).
 bool RomRamSELECT = false;
@@ -185,6 +188,7 @@ bool RomRamSELECT = false;
 unsigned char romBankNumber = 0x01;
 //if we overflow the value it will wrap around. The max value is found 
 unsigned short maxRomBankNumber;
+unsigned char maxRamBankNumber;
 
 
 //HALT
@@ -196,10 +200,13 @@ SDL_Renderer* renderer = NULL;
 SDL_Texture* texture = NULL;
 unsigned int* pixels;
 unsigned char WIDTH = 160;
-unsigned char HEIGTH = 144;
+unsigned char HEIGHT = 144;
+int HandleEventCounter = 0;
 
 bool drawFlag = false;
 bool isRunning;
+bool debuggingGraphics = false;
+bool everytime = false;
 
 //VULKAN
 
@@ -289,6 +296,8 @@ void setLCDSTAT();
 void drawScanLine();
 void renderTiles();
 void renderSprites();
+void renderDebug();
+void colorDebug(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel);
 void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel, bool sprite);
 void doInterrupts();
 void setInterruptAddress(unsigned char bit);
@@ -301,6 +310,7 @@ void makeJoypadInterrupt(bool directional, unsigned char bit);
 void joypad();
 void getMBC();
 void getMaxRomBankNumber();
+void getMaxRamBankNumber();
 void getRamEnable(unsigned char data);
 void getRomBankNumber(unsigned char data);
 void RomRamBankNumber(unsigned char data);
@@ -320,6 +330,7 @@ int main(int argc, char* argv[])
     {
         getMBC();
         getMaxRomBankNumber();
+        getMaxRamBankNumber();
     }
     pixels = (unsigned int*)malloc(sizeof(unsigned int) * (160 * 144));
     if (pixels == NULL)
@@ -332,16 +343,17 @@ int main(int argc, char* argv[])
         cyclesBeforeLCDRender = 0;
         while (cyclesBeforeLCDRender < (maxCycleBeforeRender))
         {
-            handleEvents();
             emulateCycle();
             doInterrupts();
             
         }    
-        SDL_UpdateTexture(texture, NULL, pixels, 160 * sizeof(unsigned int));
+        handleEvents();
+        /*SDL_UpdateTexture(texture, NULL, pixels, 160 * sizeof(unsigned int));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
+        SDL_RenderPresent(renderer);*/
+        //printf("rendered");
         SDL_RenderPresent(renderer);
-        /*SDL_RenderPresent(renderer);
-        SDL_RenderClear(renderer);*/
+        SDL_RenderClear(renderer);
     }
     void quitGame();
     //printf("%c-------%c\n", memory[0xFF01], memory[0xFF02]);
@@ -489,7 +501,6 @@ void setupGraphics()
         SDL_RenderPresent(renderer);
         isRunning = true;
 
-        
     }
     else
     {
@@ -930,9 +941,11 @@ void emulateCycle()
     //pc == 0x16b
     //pc == 0x131 && isRamEnabled == false
     //pc == 0xff84. -> pc == 0x48d5
+    //pokemon red ----- second pc == 0x1D00
+    //pc == 0xB5 && DE.DE == 0x8027
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
-    //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, AF.AF, BC.BC, DE.DE, HL.HL);
+    //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, AF.AF, BC.BC, DE.DE, HL.HL);
     switch (opcode & 0xFF)
     {
         case 0x10:
@@ -3960,13 +3973,13 @@ void renderTiles()
     //in the BG map tile numbers every byte contains the number of the tile (position of tile in memory) to be displayed in a 32*32 grid, 
     //every tile hax 8*8 pixels, totaling 256*256 pixels that is drawn to the screen.
     //printf("%x", (0x9800) + (32 * y));
-    for (int x = 0; x < 20; x++)
+    for (int x = 0; x < 160; x++)
     {
-        unsigned char xPos = ((x + ((ScrollX) /8) & 0x1F));
-        unsigned char yPos = ((memory[LY] + ScrollY) & 255);
+        unsigned char xPos = (((x + ScrollX) / 8) & 0x1F);
+        unsigned char yPos = ((memory[LY] + ScrollY));
         if (unsign)
         {
-            tileNumber = memory[((locationOfTileNumber)+xPos) + ((yPos/8)* 32)];
+            tileNumber = memory[((locationOfTileNumber)+xPos) + ((yPos/8) * 32)];
         }
         else
         {
@@ -3987,30 +4000,119 @@ void renderTiles()
             tileNumber += 128;
             tileLocation += tileNumber * 16;
         }
-
-        unsigned short bytePos = ((yPos%8) *2);
+        //unsigned short bytePos = ((yPos % 8) * 2);
+        unsigned char bytePos = (((yPos) %8)*2);
         memoryPosition =  tileLocation + (bytePos);
         lineOfTile[0] = memory[memoryPosition];
         //printf("%X", 0x8000 + (tileNumber * 10) + (2 * yPixel));
         //getting second byte of the line
         memoryPosition = tileLocation + 1 + (bytePos);
         lineOfTile[1] = memory[memoryPosition];
-
+        unsigned char pixelPosition = ((ScrollX + x) % 8);
+        MSB = (lineOfTile[1] & (0b10000000 >> pixelPosition));
+        MSB >>= (7 - pixelPosition);
+        LSB = (lineOfTile[0] & (0b10000000 >> pixelPosition));
+        LSB >>= (7 - pixelPosition);
+        //ypos=2 && xpos = 2
+         colorPallete(MSB, LSB, x, memory[LY], false);
         /*MSB = (lineOfTile[1] & (0b10000000 >> (x % 8)));
         MSB >>= (7 - (x%8));
         LSB = (lineOfTile[0] & (0b10000000 >> (x % 8)));
         LSB >>= (7 - (x % 8));
         colorPallete(MSB, LSB, x, memory[LY], false);*/
-        for (int xPixel = 0; xPixel < 8; xPixel++)
+        /*for (int xPixel = 0; xPixel < 8; xPixel++)
         {
             MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
             MSB >>= (7 - xPixel);
             LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
             LSB >>= (7 - xPixel);
-            colorPallete(MSB, LSB, ((x * 8) + xPixel), memory[LY], false);
-        }
+            colorPallete(MSB, LSB, x, memory[LY], false);
+        }*/
         //printf("\n");
     }
+}
+
+void renderDebug()
+{
+    unsigned short locationOfTileData;
+    unsigned short memoryPosition;
+    unsigned char bytePos;
+    unsigned char lineOfTile[2];
+    unsigned char MSB;
+    unsigned char LSB;
+    //theres 320 bytes in the first 20 tiles.
+    unsigned short yOffset = 320;
+    unsigned char xOffset = 16;
+    SDL_SetWindowSize(window, 320, 294);
+    for (int y = 0; y < 18; y++)
+    {
+        for (int x = 0; x < 20; x++)
+        {
+            for (unsigned char yPixel = 0; yPixel < 8; yPixel++)
+            {
+                memoryPosition = 0x8000 + (yOffset * y) + (yPixel*2) + (x * xOffset);
+                lineOfTile[0] = memory[memoryPosition];
+                //printf("%X", 0x8000 + (tileNumber * 10) + (2 * yPixel));
+                //getting second byte of the line
+                memoryPosition = 0x8000 + (yOffset * y) + (yPixel * 2) + (x * xOffset) + 1;
+                lineOfTile[1] = memory[memoryPosition];
+                for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
+                {
+                    MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
+                    MSB >>= (7 - xPixel);
+                    LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+                    LSB >>= (7 - xPixel);
+                    colorDebug(MSB, LSB, (x * 8)+xPixel, (y * 8) + yPixel, false);
+                }
+            }
+            
+        }
+        SDL_RenderPresent(renderer);
+    }
+    
+    while (debuggingGraphics)
+    {
+        handleEvents();
+    }
+    SDL_SetWindowSize(window, WIDTH*2, HEIGHT*2);
+}
+
+void colorDebug(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel)
+{
+    switch (MSB)
+    {
+    case 0:
+        switch (LSB)
+        {
+        case 0:
+            //white color
+                //SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
+            return;
+        case 1:
+            //blue-green color
+            //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
+            SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+            break;
+        }
+        break;
+    case 1:
+        switch (LSB)
+        {
+        case 0:
+            //light green color
+            //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
+            SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+            break;
+        case 1:
+            //dark green color
+            //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
+            SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+            break;
+        }
+        break;
+    } 
+    SDL_RenderDrawPoint(renderer, xPixel, yPixel);
 }
 
 void renderSprites()
@@ -4030,7 +4132,6 @@ void renderSprites()
                 spriteBytes[bytes] = memory[memoryLocation];
             }
             unsigned char spriteBytes0Minus16 = spriteBytes[0] - 16;
-            //if it isnt in this value range, the sprite will be hidden so we don't need to draw it in this frame.
             if (spriteBytes0Minus16 > 0 && spriteBytes0Minus16 < 160)
             {
                 unsigned char yPixel = 0;
@@ -4040,13 +4141,13 @@ void renderSprites()
                     unsigned char LSB = 0;//less significant bit
                     unsigned char lineOfTile[2];
                     unsigned char xPosition = spriteBytes[1];
-                    unsigned char yPosition = memory[LY]  - spriteBytes[0];
+                    unsigned char yPosition = memory[LY] - spriteBytes[0];
 
                     tileNumber = (0x8000 + (spriteBytes[2] << 4));
                     unsigned short yPixelX2 = yPixel << 1;
-                    memoryLocation = (tileNumber) +  (yPixelX2);
+                    memoryLocation = (tileNumber)+(yPixelX2);
                     lineOfTile[0] = memory[memoryLocation];
-                    memoryLocation = (tileNumber) + (yPixelX2) + 1;
+                    memoryLocation = (tileNumber)+(yPixelX2)+1;
                     lineOfTile[1] = memory[memoryLocation];
 
                     for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
@@ -4061,13 +4162,13 @@ void renderSprites()
                             //flip horizontaly
                             if (testBit(spriteBytes[3], 6))
                             {
-                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel) , true);
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
                             }
                             else
                             {
                                 colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
                             }
-                            
+
                         }
                         else
                         {
@@ -4108,7 +4209,7 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
-                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
             break;
@@ -4119,13 +4220,13 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x427211FF;
-                //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x102612FF;
-                //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
                 break;
             }
             break;
@@ -4142,13 +4243,13 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
                 //white color
                 //SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0xDCFFDCFF;
-                //SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
+                SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
                 break;
             case 1:
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
-                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
             break;
@@ -4159,21 +4260,24 @@ void colorPallete(unsigned char MSB, unsigned char LSB,unsigned char xPixel, uns
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x427211FF;
-                //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x102612FF;
-                //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
                 break;
             }
             break;
         }
     }
-    
-    //SDL_RenderDrawPoint(renderer, xPixel, yPixel);
-    
+    SDL_RenderDrawPoint(renderer, xPixel, yPixel);
+    if (everytime)
+    {
+        
+        SDL_RenderPresent(renderer);
+    }
 }
 
 void setLCDSTAT()
@@ -4366,9 +4470,9 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
         {
             if (MBC1Enabled)
             {
-                if (ramBankNumber == 0)
+                if (ramBankNumber == 0 || !RomRamSELECT)
                 {
-                     cartridgeMemory[memoryLocation] = data;
+                     cartridgeMemory[(memoryLocation - 0xA000)] = data;
                      memory[memoryLocation] = data;
                      return;
                 }
@@ -4450,7 +4554,7 @@ unsigned char readMemory(unsigned short memoryLocation)
         {
             if (MBC1Enabled)
             {
-                if (ramBankNumber == 0)
+                if (ramBankNumber == 0 || !RomRamSELECT)
                 {
                     return cartridgeMemory[memoryLocation];
                 }
@@ -4568,6 +4672,10 @@ void doHalt()
                 {
                     clockTiming(114);
                 }
+                else if(scanlineCounter >= 32 && divCounter >= 32)
+                {
+                    clockTiming(40);
+                }
                 else
                 {
                     clockTiming(4);
@@ -4594,6 +4702,10 @@ void doHalt()
                 if (scanlineCounter >= 114 && divCounter >= 114)
                 {
                     clockTiming(114);
+                }
+                else if (scanlineCounter >= 20 && divCounter >= 20)
+                {
+                    clockTiming(20);
                 }
                 else
                 {
@@ -4697,6 +4809,27 @@ void handleEvents()
         case SDL_KEYUP:
             switch (event.key.keysym.sym)
             {
+            case SDLK_TAB:
+                if (everytime)
+                {
+                    everytime = false;
+                }
+                else
+                {
+                    everytime = true;
+                }
+                break;
+            case SDLK_SPACE:
+                if (debuggingGraphics)
+                {
+                    debuggingGraphics = false;
+                }
+                else
+                {
+                    debuggingGraphics = true;
+                    renderDebug();
+                }
+                break;
             case SDLK_UP:
                 SET(&joypadKeys, 2, 0);
                 break;
@@ -4765,12 +4898,20 @@ void joypad()
 
 void getMBC()
 {
-    if (memory[0x147] <= 3)
+    if (memory[0x147] <= 0x3 && memory[0x147] != 0)
     {
         MBC1Enabled = true;
         return;
     }
-    MBC2Enabled = true;
+    else if (memory[0x147] == 0x5 || memory[0x147] == 0x6)
+    {
+        MBC2Enabled = true;
+    }
+    else if (memory[0x147] >= 0xF && memory[0x147] <= 0x13)
+    {
+        MBC3Enabled = true;
+    }
+    
     return;
 }
 
@@ -4819,6 +4960,25 @@ void getMaxRomBankNumber()
     }
 }
 
+void getMaxRamBankNumber()
+{
+    switch (memory[0x0149])
+    {
+    case 02:
+        maxRamBankNumber = 0;
+        break;
+    case 03:
+        maxRamBankNumber = 4;
+        break;
+    case 04:
+        maxRamBankNumber = 16;
+        break;
+    case 05:
+        maxRamBankNumber = 8;
+        break;
+    }
+}
+
 void getRamEnable(unsigned char data)
 {
     if (MBC2Enabled)
@@ -4852,7 +5012,11 @@ void getRomBankNumber(unsigned char data)
     unsigned char oldBankNumber = romBankNumber;
     unsigned char upperBits = (romBankNumber & 0x60);
     romBankNumber = (data & 0x1F);
-    if ((romBankNumber & 0x1F) == 0)
+    if (MBC1Enabled && (romBankNumber & 0x1F) == 0)
+    {
+        romBankNumber = 0x01;
+    }
+    if (MBC3Enabled && romBankNumber == 0)
     {
         romBankNumber = 0x01;
     }
@@ -4936,7 +5100,7 @@ void RomRamModeSelect(unsigned char data)
     {
         RomRamSELECT = false;
         unsigned char oldRamBankNumber = ramBankNumber;
-        ramBankNumber = 0;
+        //ramBankNumber = 0;
         if (oldRamBankNumber != ramBankNumber)
         {
             memoryCopy(true, false, 0xA000, (oldRamBankNumber * 0x2000));
