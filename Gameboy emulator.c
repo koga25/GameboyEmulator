@@ -335,6 +335,7 @@ void RomRamModeSelect(unsigned char data);
 void increaseRtcTimers();
 void updateRtcRegisters();
 void memoryCopy(bool copyRam, bool copyRom, unsigned long newOffset, unsigned long oldOffset);
+void copyMemoryToRam();
 void quitGame();
 
 int main(int argc, char* argv[])
@@ -351,18 +352,22 @@ int main(int argc, char* argv[])
         getMaxRomBankNumber();
         getMaxRamBankNumber();
     }
+
     unsigned long ramSize = (maxRamBankNumber * 0x2000);
     ram = (unsigned char*)malloc(sizeof(unsigned char) * ramSize);
     if (ram == NULL)
     {
         printf("Couldn't create ram");
     }
+    copyMemoryToRam();
+
     pixels = (unsigned int*)malloc(sizeof(unsigned int) * (160 * 144));
     if (pixels == NULL)
     {
         printf("couldn't create pixels");
         exit(0);
     }
+
     while (isRunning == true)
     {
         cyclesBeforeLCDRender = 0;
@@ -436,7 +441,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Akumajou Dracula - Shikkokutaru Zensoukyoku (J) [S][!].gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Dr. Mario (W) (V1.1).gb", "rb");
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\ram_64kb.gb"
     if (file == NULL) {
         printf("File not found");
@@ -526,7 +531,6 @@ void setupGraphics()
         SDL_RenderClear(renderer);
         SDL_RenderPresent(renderer);
         isRunning = true;
-
     }
     else
     {
@@ -969,10 +973,10 @@ void emulateCycle()
     //pc == 0xff84. -> pc == 0x48d5
     //pokemon red ----- second pc == 0x1D00
     //pc == 0xB5 && DE.DE == 0x8027
-    //!RomRamSELECT && pc == 0xff84
+    //akumajou -> pc == 0xDEDF (OK)     --      pc == 0x2F63
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
-    //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], LY[%X], AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, memory[LY], AF.AF, BC.BC, DE.DE, HL.HL);
+    //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], LY[%X], , AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, memory[LY], AF.AF, BC.BC, DE.DE, HL.HL);
     switch (opcode & 0xFF)
     {
     case 0x10:
@@ -2043,7 +2047,7 @@ void emulateCycle()
         unsigned char lowByte = (pc & 0xFF);
         PUSH(&highByte, &lowByte);
         //same logic of instruction 0xC7 but it doesnt overflow.
-        pc = 0x9;
+        pc = 0xF;
         break;
     }
     case 0xDF:
@@ -2083,7 +2087,7 @@ void emulateCycle()
         unsigned char lowByte = (pc & 0xFF);
         PUSH(&highByte, &lowByte);
         //same logic of instruction 0xC7 but it doesnt overflow.
-        pc = 0x29;
+        pc = 0x2F;
         break;
     }
     case 0xFF:
@@ -3893,19 +3897,23 @@ void PUSHAF()
 
 void POP(unsigned char* highByte, unsigned char* lowByte)
 {
-    *lowByte = memory[sp];
+    unsigned char firstPop = readMemory(sp);
+    *lowByte = firstPop;
     sp++;
-    *highByte = memory[sp];
+    unsigned char secondPop = readMemory(sp);
+    *highByte = secondPop;
     sp++;
     clockTiming(12);
 }
 
 void POPAF()
 {
-    AF.F = memory[sp];
+    unsigned char firstPop = readMemory(sp);
+    AF.F = firstPop;
     AF.F &= 0b11110000;
     sp++;
-    AF.A = memory[sp];
+    unsigned char secondPop = readMemory(sp);
+    AF.A = secondPop;
     sp++;
     clockTiming(12);
 }
@@ -5076,20 +5084,15 @@ void getRomBankNumber(unsigned char data)
         }
     }
     unsigned char oldBankNumber = romBankNumber;
-    unsigned char upperBits = (romBankNumber & 0x60);
     romBankNumber = (data & 0x1F);
     if (MBC1Enabled && (romBankNumber & 0x1F) == 0)
     {
-        romBankNumber = 0x01;
+        romBankNumber |= 0x01;
     }
     if (MBC3Enabled && romBankNumber == 0)
     {
         romBankNumber = 0x01;
         return;
-    }
-    if (!RomRamSELECT)
-    {
-        romBankNumber |= upperBits;
     }
     if (romBankNumber > maxRomBankNumber)
     {
@@ -5282,6 +5285,14 @@ void memoryCopy(bool copyRam, bool copyRom, unsigned long newOffset, unsigned lo
             memory[0xA000 + i] = cartridgeMemory[oldOffset + i];
             //cartridgeMemory[oldOffset + i] = tempValue;
         }
+    }
+}
+
+void copyMemoryToRam()
+{
+    for (int i = 0; i < 0x2000; i++)
+    {
+        ram[i] = cartridgeMemory[0xA000 + i];
     }
 }
 
