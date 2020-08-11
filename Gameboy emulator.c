@@ -354,12 +354,15 @@ int main(int argc, char* argv[])
     }
 
     unsigned long ramSize = (maxRamBankNumber * 0x2000);
-    ram = (unsigned char*)malloc(sizeof(unsigned char) * ramSize);
-    if (ram == NULL)
+    if (ramSize > 0)
     {
-        printf("Couldn't create ram");
+        ram = (unsigned char*)malloc(sizeof(unsigned char) * ramSize);
+        if (ram == NULL)
+        {
+            printf("Couldn't create ram");
+        }
+        copyMemoryToRam();
     }
-    copyMemoryToRam();
 
     pixels = (unsigned int*)malloc(sizeof(unsigned int) * (160 * 144));
     if (pixels == NULL)
@@ -441,7 +444,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Dr. Mario (W) (V1.1).gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Pokemon Red (UE) [S][!].gb", "rb");
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\ram_64kb.gb"
     if (file == NULL) {
         printf("File not found");
@@ -3973,6 +3976,7 @@ void renderTiles()
     bool unsign = true;
     //checking the position of memory the BG tile data is located, if testBit is true, BG = 0x8000-0x8FFF, else, 0x8800-0x97FF
     //this will determine where to search for the data of the tile number that needs to be displayed.
+    
     if (testBit(memory[LCDC], 4))
     {
         locationOfTileData = 0x8000;
@@ -3987,15 +3991,34 @@ void renderTiles()
     unsigned short locationOfTileNumber = 0;
     //checking the position of memory the BG Tile Map Display is located, if testBit is true, BG = 9C00-9FFF, else, 9800-9BFF
     //this will determine where to search for the number of the tile that we will need to search.
-    if (testBit(memory[LCDC], 3))
+
+    //if bit 5 is set, getting location of tile number of Windows.
+    if (testBit(memory[LCDC], 5))
     {
-        locationOfTileNumber = 0x9C00;
+        if (testBit(memory[LCDC], 6))
+        {
+            locationOfTileNumber = 0x9C00;
+        }
+        else
+        {
+
+            locationOfTileNumber = 0x9800;
+        }
     }
+    //else get location of tile number of Background
     else
     {
+        if (testBit(memory[LCDC], 3))
+        {
+            locationOfTileNumber = 0x9C00;
+        }
+        else
+        {
 
-        locationOfTileNumber = 0x9800;
+            locationOfTileNumber = 0x9800;
+        }
     }
+    
     //the position of memory of the tile number XX is: 0x8XX0;
     unsigned char tileNumber = 0;
     unsigned char MSB = 0;//most significant bit
@@ -4652,7 +4675,12 @@ unsigned char readMemory(unsigned short memoryLocation)
     }
     if (memoryLocation >= 0x4000 && memoryLocation <= 0x7FFF)
     {
-        return cartridgeMemory[(memoryLocation - 0x4000) + (romBankNumber * 0x4000)];
+        if (maxRomBankNumber >= 0x01)
+        {
+            return cartridgeMemory[(memoryLocation - 0x4000) + (romBankNumber * 0x4000)];
+        }
+        
+        return memory[memoryLocation];
     }
     if (memoryLocation == 0xFF00)
     {
