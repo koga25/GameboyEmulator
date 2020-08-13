@@ -378,9 +378,8 @@ int main(int argc, char* argv[])
         {
             emulateCycle();
             doInterrupts();
-
+            handleEvents();
         }
-        handleEvents();
         SDL_UpdateTexture(texture, NULL, pixels, 160 * sizeof(unsigned int));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
@@ -444,7 +443,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Pokemon Red (UE) [S][!].gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Super Mario Land (W) (V1.0) [!].gb", "rb");
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\ram_64kb.gb"
     if (file == NULL) {
         printf("File not found");
@@ -977,6 +976,11 @@ void emulateCycle()
     //pokemon red ----- second pc == 0x1D00
     //pc == 0xB5 && DE.DE == 0x8027
     //akumajou -> pc == 0xDEDF (OK)     --      pc == 0x2F63
+    //pokemon red -> new game doesnt go to pc == 0x19E4
+    //pokemon red -> pc == 0x36e9
+    //pokemon red -> pc == 0x60e0 || pc == 0x60ea
+    //3abe
+    //268b rom 13
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
     //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], LY[%X], , AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, memory[LY], AF.AF, BC.BC, DE.DE, HL.HL);
@@ -2906,12 +2910,12 @@ void emulateCycle()
             RESToMemory(HL.HL, 7, 16);
             break;
         default:
-            printf("opcode [%X] not found\n", opcode);
+            printf("opcode [%X] not found, romBank[%X], ramBank[%X], pc[%X], sp[%X]\n", opcode, romBankNumber, ramBankNumber, pc, sp);
             break;
         }
         break;
     default:
-        printf("opcode [%X] not found\n", opcode);
+        printf("opcode [%X] not found, romBank[%X], ramBank[%X], pc[%X], sp[%X]\n", opcode, romBankNumber, ramBankNumber, pc, sp);
         break;
     }
     //increasing program counter;
@@ -3971,6 +3975,10 @@ void drawScanLine()
 
 void renderTiles()
 {
+    if (!testBit(memory[LCDC], 7))
+    {
+        return;
+    }
     unsigned short locationOfTileData = 0;
     unsigned char offset = 0;
     bool unsign = true;
@@ -3988,35 +3996,40 @@ void renderTiles()
         locationOfTileData = 0x8800;
     }
 
-    unsigned short locationOfTileNumber = 0;
+    unsigned short locationOfTileNumberBG = 0;
+    unsigned short locationOfTileNumberWindow = 0;
+    bool isWindowEnabled = false;
+    unsigned char windowX = 0;
+    unsigned char windowY = 0;
     //checking the position of memory the BG Tile Map Display is located, if testBit is true, BG = 9C00-9FFF, else, 9800-9BFF
     //this will determine where to search for the number of the tile that we will need to search.
 
     //if bit 5 is set, getting location of tile number of Windows.
     if (testBit(memory[LCDC], 5))
     {
+        windowX = memory[0xFF4B] - 7;
+        windowY = memory[0xFF4A];
+        isWindowEnabled = true;
         if (testBit(memory[LCDC], 6))
         {
-            locationOfTileNumber = 0x9C00;
+            locationOfTileNumberWindow = 0x9C00;
         }
         else
         {
 
-            locationOfTileNumber = 0x9800;
+            locationOfTileNumberWindow = 0x9800;
         }
     }
     //else get location of tile number of Background
+
+    if (testBit(memory[LCDC], 3))
+    {
+        locationOfTileNumberBG = 0x9C00;
+    }
     else
     {
-        if (testBit(memory[LCDC], 3))
-        {
-            locationOfTileNumber = 0x9C00;
-        }
-        else
-        {
 
-            locationOfTileNumber = 0x9800;
-        }
+        locationOfTileNumberBG = 0x9800;
     }
     
     //the position of memory of the tile number XX is: 0x8XX0;
@@ -4033,16 +4046,35 @@ void renderTiles()
     //printf("%x", (0x9800) + (32 * y));
     for (int x = 0; x < 160; x++)
     {
-        unsigned char xPos = (((x + ScrollX) / 8) & 0x1F);
-        unsigned char yPos = ((memory[LY] + ScrollY));
-        if (unsign)
+        unsigned char xPos = 0;
+        unsigned char yPos = 0;
+        if (isWindowEnabled && memory[LY] >= windowY && x >= windowX )
         {
-            tileNumber = memory[((locationOfTileNumber)+xPos) + ((yPos / 8) * 32)];
+            xPos = (((x - windowX)/8) & 0x1F);
+            yPos = memory[LY] - windowY;
+            if (unsign)
+            {
+                tileNumber = memory[((locationOfTileNumberWindow)+xPos) + ((yPos / 8) * 32)];
+            }
+            else
+            {
+                tileNumber = (signed char)memory[((locationOfTileNumberWindow)+xPos) + ((yPos / 8) * 32)];
+            }
         }
         else
         {
-            tileNumber = (signed char)memory[((locationOfTileNumber)+xPos) + ((yPos / 8) * 32)];
+            xPos = (((x + ScrollX) / 8) & 0x1F);
+            yPos = ((memory[LY] + ScrollY));
+            if (unsign)
+            {
+                tileNumber = memory[((locationOfTileNumberBG)+xPos) + ((yPos / 8) * 32)];
+            }
+            else
+            {
+                tileNumber = (signed char)memory[((locationOfTileNumberBG)+xPos) + ((yPos / 8) * 32)];
+            }
         }
+        
         //printf("tileNumber: %X   lineOfTile[0]: ", tileNumber);
 
         //for every tile there is 16 bytes, for 2 bytes there is 8 pixels to be drawn. 
@@ -4066,7 +4098,16 @@ void renderTiles()
         //getting second byte of the line
         memoryPosition = tileLocation + 1 + (bytePos);
         lineOfTile[1] = memory[memoryPosition];
-        unsigned char pixelPosition = ((ScrollX + x) % 8);
+        unsigned char pixelPosition = 0;
+        if (isWindowEnabled && x >= windowX && memory[LY] >= windowY)
+        {
+            pixelPosition = ((((x - windowX))) % 8);
+        }
+        else
+        {
+            pixelPosition = ((ScrollX + x) % 8);
+        }
+        
         MSB = (lineOfTile[1] & (0b10000000 >> pixelPosition));
         MSB >>= (7 - pixelPosition);
         LSB = (lineOfTile[0] & (0b10000000 >> pixelPosition));
@@ -4193,59 +4234,63 @@ void renderSprites()
             if (spriteBytes0Minus16 > 0 && spriteBytes0Minus16 < 160)
             {
                 unsigned char yPixel = 0;
-                while ((spriteBytes0Minus16 + yPixel) <= memory[LY] && yPixel != 8)
+                if (memory[LY] - spriteBytes0Minus16 == 8)
                 {
-                    unsigned char MSB = 0;//most significant bit
-                    unsigned char LSB = 0;//less significant bit
-                    unsigned char lineOfTile[2];
-                    unsigned char xPosition = spriteBytes[1];
-                    unsigned char yPosition = memory[LY] - spriteBytes[0];
-
-                    tileNumber = (0x8000 + (spriteBytes[2] << 4));
-                    unsigned short yPixelX2 = yPixel << 1;
-                    memoryLocation = (tileNumber)+(yPixelX2);
-                    lineOfTile[0] = memory[memoryLocation];
-                    memoryLocation = (tileNumber)+(yPixelX2)+1;
-                    lineOfTile[1] = memory[memoryLocation];
-
-                    for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
+                    while ((spriteBytes0Minus16 + yPixel) <= memory[LY] && yPixel != 8)
                     {
-                        //flip vertically
-                        if (testBit(spriteBytes[3], 5))
-                        {
-                            MSB = (lineOfTile[1] & (0b00000001 << xPixel));
-                            MSB >>= (xPixel);
-                            LSB = (lineOfTile[0] & (0b00000001 << xPixel));
-                            LSB >>= (xPixel);
-                            //flip horizontaly
-                            if (testBit(spriteBytes[3], 6))
-                            {
-                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
-                            }
-                            else
-                            {
-                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
-                            }
+                        unsigned char MSB = 0;//most significant bit
+                        unsigned char LSB = 0;//less significant bit
+                        unsigned char lineOfTile[2];
+                        unsigned char xPosition = spriteBytes[1];
+                        unsigned char yPosition = memory[LY] - spriteBytes[0];
 
-                        }
-                        else
+                        tileNumber = (0x8000 + (spriteBytes[2] << 4));
+                        unsigned short yPixelX2 = yPixel << 1;
+                        memoryLocation = (tileNumber)+(yPixelX2);
+                        lineOfTile[0] = memory[memoryLocation];
+                        memoryLocation = (tileNumber)+(yPixelX2)+1;
+                        lineOfTile[1] = memory[memoryLocation];
+
+                        for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
                         {
-                            MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
-                            MSB >>= (7 - xPixel);
-                            LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
-                            LSB >>= (7 - xPixel);
-                            if (testBit(spriteBytes[3], 6))
+                            //flip vertically
+                            if (testBit(spriteBytes[3], 5))
                             {
-                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
+                                MSB = (lineOfTile[1] & (0b00000001 << xPixel));
+                                MSB >>= (xPixel);
+                                LSB = (lineOfTile[0] & (0b00000001 << xPixel));
+                                LSB >>= (xPixel);
+                                //flip horizontaly
+                                if (testBit(spriteBytes[3], 6))
+                                {
+                                    colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
+                                }
+                                else
+                                {
+                                    colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
+                                }
+
                             }
                             else
                             {
-                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
+                                MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
+                                MSB >>= (7 - xPixel);
+                                LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+                                LSB >>= (7 - xPixel);
+                                if (testBit(spriteBytes[3], 6))
+                                {
+                                    colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
+                                }
+                                else
+                                {
+                                    colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
+                                }
                             }
                         }
+                        yPixel++;
                     }
-                    yPixel++;
                 }
+                
             }
         }
     }
@@ -4307,7 +4352,7 @@ void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, un
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
-                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
             break;
@@ -4333,7 +4378,6 @@ void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, un
     /*SDL_RenderDrawPoint(renderer, xPixel, yPixel);
     if (everytime)
     {
-
         SDL_RenderPresent(renderer);
     }*/
 }
@@ -4543,6 +4587,11 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
                      return;
                 }
                 cartridgeMemory[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)] = data;*/
+                if (maxRamBankNumber == 0)
+                {
+                    memory[memoryLocation] = data;
+                    return;
+                }
                 ram[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)] = data;
 
                 //memory[memoryLocation] = data;
@@ -4623,6 +4672,10 @@ unsigned char readMemory(unsigned short memoryLocation)
         {
             if (MBC1Enabled)
             {
+                if (maxRamBankNumber == 0)
+                {
+                    return memory[memoryLocation];
+                }
                 return ram[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)];
                 /*if (ramBankNumber == 0 || !RomRamSELECT)
                 {
@@ -4639,6 +4692,11 @@ unsigned char readMemory(unsigned short memoryLocation)
             }
             else if (MBC3Enabled)
             {
+                if (maxRamBankNumber == 0)
+                {
+                    return memory[memoryLocation];
+                }
+
                 if (ramBankNumber <= 0x7)
                 {
                     return ram[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)];
@@ -5112,7 +5170,14 @@ void getRomBankNumber(unsigned char data)
         }
     }
     unsigned char oldBankNumber = romBankNumber;
-    romBankNumber = (data & 0x1F);
+    if (MBC3Enabled)
+    {
+        romBankNumber = (data & 0x7F);
+    }
+    else
+    {
+        romBankNumber = (data & 0x1F);
+    }
     if (MBC1Enabled && (romBankNumber & 0x1F) == 0)
     {
         romBankNumber |= 0x01;
