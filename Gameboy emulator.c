@@ -161,6 +161,8 @@ const int maxCycleBeforeRender = CLOCKSPEED / 60;
 int cyclesBeforeLCDRender = 0;
 //the counter is found by the equation CLOCKSPEED/FREQUENCY, clockspeed is 4194304 and the frequency is set by the TMC Register (4096 in startup).
 int timerCounter = CLOCKSPEED / FREQUENCY_00;
+//we need to have an reference to the total timer chosen because of the Timer Obscure Behavior implementation.
+int timerFrequencyChosen = CLOCKSPEED / FREQUENCY_00;
 //the counter of divider register
 int divCounter = CLOCKSPEED / FREQUENCY_11;
 //the cycles the divider register was on until now
@@ -172,6 +174,7 @@ bool masterInterrupt = false; //Interrupt Master Enable Flag - IME
 //when the cpu executes the enable interrupt instruction it will only take effect in the next instruction we need a delay to activate the IME
 bool delayMasterInterrupt = false;
 unsigned char joypadKeys = 0xFF;
+bool timerInterruptDelay = false;
 
 //ram and MBC related parts
 bool isRamEnabled = false;
@@ -306,6 +309,7 @@ void POP(unsigned char* highByte, unsigned char* lowByte);
 void POPAF();
 void clockTiming(unsigned char cycles);
 void updateTimers(unsigned char cycles);
+void updateTIMA();
 void writeInMemory(unsigned short memoryLocation, unsigned char registerA);
 unsigned char readMemory(unsigned short memoryLocation);
 void setClockFrequency();
@@ -344,7 +348,7 @@ int main(int argc, char* argv[])
     initialize();
     setupGraphics();
     setupVulkan();
-
+    bool condition = false;
     //seeing what MBC bank is used.
     if (memory[0x147] != 0)
     {
@@ -376,6 +380,14 @@ int main(int argc, char* argv[])
         cyclesBeforeLCDRender = 0;
         while (cyclesBeforeLCDRender < (maxCycleBeforeRender))
         {
+            /*if (memory[0xD110] != 0xFF && condition)
+            {
+                printf("ok");
+            }
+            if (memory[0xD110] == 0xFF && !condition)
+            {
+                condition = true;
+            }*/
             emulateCycle();
             doInterrupts();
             handleEvents();
@@ -405,7 +417,9 @@ void initialize()
     memory[0xFF00] = 0xCF; //JOYPAD
     memory[TIMA] = 0x00; //TIMA
     memory[TMA] = 0x00; //TMA
-    memory[TMC] = 0x00; //TAC
+    memory[TMC] = 0xF8; //TAC
+    memory[DIV] = 0xAB;
+    divCounter -= 0xCC;
     memory[0xFF10] = 0x80; //NR10
     memory[0xFF11] = 0xBF; //NR11
     memory[0xFF12] = 0xF3; //NR12
@@ -425,9 +439,10 @@ void initialize()
     memory[0xFF25] = 0xF3; //NR51
     memory[0xFF26] = 0xF1; //the value is different for GB and SGB; -> NR52
     memory[LCDC] = 0x91; //LCDC
-    memory[STAT] = 0x80;
+    memory[STAT] = 0x85;
     memory[0xFF42] = 0x00; //SCY
     memory[0xFF43] = 0x00; //SCX
+    memory[LY] = 0x00;
     memory[0xFF45] = 0x00; //LYC
     memory[0xFF47] = 0xFC; //BGP
     memory[0xFF48] = 0xFF; //0BP0
@@ -443,8 +458,9 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Super Mario Land (W) (V1.0) [!].gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Castlevania Adventure, The (E) [!].gb", "rb");
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\ram_64kb.gb"
+    //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Akumajou Dracula - Shikkokutaru Zensoukyoku (J) [S][!].gb"
     if (file == NULL) {
         printf("File not found");
         exit(EXIT_FAILURE);
@@ -981,6 +997,11 @@ void emulateCycle()
     //pokemon red -> pc == 0x60e0 || pc == 0x60ea
     //3abe
     //268b rom 13
+    //Super mario land never updates scrollX, pc == 0xa5, ->pc == 0x2196 (AF.AF == C1A0.   BGB-> A1A0)
+    //pc == 0x249C (AF.AF == 18C0.     BGB-> 16C0)    pc == 0x2642 (AF.AF == 0x0450.    BGB-> FF50)
+    //pc = 0x0296 -> going to vblank interrupt     BGB -> lcd interrupt
+    //pc == 0xc2c3, memory[0xFF05] == 01, opcode B6, operation OR with read value (HL.HL) doesn't work (intended -> AF.AF: 0x0100, actual -> AF.AF: 0x0080
+    //pc == 0x590 -> Castlevania adventures
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
     //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], LY[%X], , AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, memory[LY], AF.AF, BC.BC, DE.DE, HL.HL);
@@ -995,18 +1016,24 @@ void emulateCycle()
         break;
     case 0x06:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         BC.B = readMemory(pc);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x0E:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         BC.C = readMemory(pc);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x16:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         DE.D = readMemory(pc);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x1E:
         pc++;
@@ -1015,13 +1042,17 @@ void emulateCycle()
         break;
     case 0x26:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         HL.H = readMemory(pc);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x2E:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         HL.L = readMemory(pc);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x7F:
         AF.A = AF.A;
@@ -1052,8 +1083,10 @@ void emulateCycle()
         clockTiming(4);
         break;
     case 0x7E:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(HL.HL);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x40:
         BC.B = BC.B;
@@ -1080,8 +1113,10 @@ void emulateCycle()
         clockTiming(4);
         break;
     case 0x46:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         BC.B = readMemory(HL.HL);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x48:
         BC.C = BC.B;
@@ -1108,8 +1143,10 @@ void emulateCycle()
         clockTiming(4);
         break;
     case 0x4E:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         BC.C = readMemory(HL.HL);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x50:
         DE.D = BC.B;
@@ -1136,8 +1173,10 @@ void emulateCycle()
         clockTiming(4);
         break;
     case 0x56:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         DE.D = readMemory(HL.HL);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x58:
         DE.E = BC.B;
@@ -1164,8 +1203,10 @@ void emulateCycle()
         clockTiming(4);
         break;
     case 0x5E:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         DE.E = readMemory(HL.HL);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x60:
         HL.H = BC.B;
@@ -1192,8 +1233,10 @@ void emulateCycle()
         clockTiming(4);
         break;
     case 0x66:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         HL.H = readMemory(HL.HL);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x68:
         HL.L = BC.B;
@@ -1220,8 +1263,10 @@ void emulateCycle()
         clockTiming(4);
         break;
     case 0x6E:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         HL.L = readMemory(HL.HL);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x70:
         writeInMemory(HL.HL, BC.B);
@@ -1249,33 +1294,44 @@ void emulateCycle()
         break;
     case 0x36:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         writeInMemory(HL.HL, readMemory(pc));
-        clockTiming(12);
+        clockTiming(8);
         break;
     case 0x0A:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(BC.BC);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x1A:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(DE.DE);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0xFA:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char LowerNibble = readMemory(pc);
         pc++;
+        clockTiming(4);
         unsigned char HighNibble = readMemory(pc);
         unsigned short memoryLocation = (HighNibble << 8);
         memoryLocation |= LowerNibble;
         AF.A = readMemory(memoryLocation);;
-        clockTiming(16);
+        clockTiming(8);
         break;
     }
     case 0x3E:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(pc);
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x47:
         BC.B = AF.A;
@@ -1316,20 +1372,25 @@ void emulateCycle()
     case 0xEA:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char LowerNibble = readMemory(pc);
         pc++;
+        clockTiming(4);
         unsigned char HighNibble = readMemory(pc);
         unsigned short memoryLocation = (HighNibble << 8);
         memoryLocation |= LowerNibble;
         writeInMemory(memoryLocation, AF.A);
-        clockTiming(16);
+        clockTiming(8);
         break;
     }
     case 0xF2:
     {
         unsigned short memoryLocation = 0xFF00 + BC.C;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(memoryLocation);
-        clockTiming(8);
+        clockTiming(4);
         break;
     }
     case 0xE2:
@@ -1340,9 +1401,11 @@ void emulateCycle()
         break;
     }
     case 0x3A:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(HL.HL);
         HL.HL--;
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x32:
         writeInMemory(HL.HL, AF.A);
@@ -1350,9 +1413,11 @@ void emulateCycle()
         clockTiming(8);
         break;
     case 0x2A:
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(HL.HL);
         HL.HL++;
-        clockTiming(8);
+        clockTiming(4);
         break;
     case 0x22:
         writeInMemory(HL.HL, AF.A);
@@ -1362,50 +1427,66 @@ void emulateCycle()
     case 0xE0:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned short memoryLocation = 0xFF00 + readMemory(pc);;
         writeInMemory(memoryLocation, AF.A);
-        clockTiming(12);
+        clockTiming(8);
         break;
     }
     case 0xF0:
     {
         pc++;
         unsigned short memoryLocation = 0xFF00 + memory[pc];
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         AF.A = readMemory(memoryLocation);
-        clockTiming(12);
+        clockTiming(8);
         break;
     }
     case 0x01:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         BC.C = readMemory(pc);
         pc++;
+        clockTiming(4);
         BC.B = readMemory(pc);
-        clockTiming(12);
+        clockTiming(4);
         break;
     case 0x11:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         DE.E = readMemory(pc);
         pc++;
+        clockTiming(4);
         DE.D = readMemory(pc);
-        clockTiming(12);
+        clockTiming(4);
         break;
     case 0x21:
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         HL.L = readMemory(pc);
         pc++;
+        clockTiming(4);
         HL.H = readMemory(pc);
-        clockTiming(12);
+        clockTiming(4);
         break;
     case 0x31:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char LowerNibble = readMemory(pc);
         pc++;
+        clockTiming(4);
         unsigned char HighNibble = readMemory(pc);
         unsigned short memoryLocation = (HighNibble << 8);
         memoryLocation |= LowerNibble;
         sp = memoryLocation;
-        clockTiming(12);
+        clockTiming(4);
         break;
     }
     case 0xF9:
@@ -1418,6 +1499,8 @@ void emulateCycle()
         AF.F = 0;
         //getting immediate signed data in the form of signed char
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         signed char e8value = (signed char)readMemory(pc);
         //the test for the CFLAG needs to use 8 total bits, in the signed form the seventh bit is thrown out as a sign value so if you have a signed
         //value of 0xFF it will be -127 instead of 255.
@@ -1437,20 +1520,23 @@ void emulateCycle()
             AF.F |= 0b00010000;
         }
         HL.HL = (sp + e8value);
-        clockTiming(12);
+        clockTiming(8);
         break;
     }
     case 0x08:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char LowerNibble = readMemory(pc);
         pc++;
+        clockTiming(4);
         unsigned char HighNibble = readMemory(pc);
         unsigned short memoryLocation = (HighNibble << 8);
         memoryLocation |= LowerNibble;
         writeInMemory(memoryLocation, sp & 0xFF);
         writeInMemory(memoryLocation + 1, (sp >> 8));
-        clockTiming(20);
+        clockTiming(12);
         break;
     }
     case 0xF5:
@@ -1501,15 +1587,19 @@ void emulateCycle()
         break;
     case 0x86:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        addRegister(&AF.A, &readValue, 8);
+        addRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0xC6:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        addRegister(&AF.A, &readValue, 8);
+        addRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0x8F:
@@ -1535,15 +1625,19 @@ void emulateCycle()
         break;
     case 0x8E:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        adcRegister(&AF.A, &readValue, 8);
+        adcRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0xCE:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        adcRegister(&AF.A, &readValue, 8);
+        adcRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0x97:
@@ -1569,15 +1663,19 @@ void emulateCycle()
         break;
     case 0x96:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        subRegister(&AF.A, &readValue, 8);
+        subRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0xD6:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        subRegister(&AF.A, &readValue, 8);
+        subRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0x9F:
@@ -1603,15 +1701,19 @@ void emulateCycle()
         break;
     case 0x9E:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        sbcRegister(&AF.A, &readValue, 8);
+        sbcRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0xDE:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        sbcRegister(&AF.A, &readValue, 8);
+        sbcRegister(&AF.A, &readValue, 4);
         break;
     }
     case 0xA7:
@@ -1637,15 +1739,19 @@ void emulateCycle()
         break;
     case 0xA6:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        andOperation(&readValue, 8);
+        andOperation(&readValue, 4);
         break;
     }
     case 0xE6:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        andOperation(&readValue, 8);
+        andOperation(&readValue, 4);
         break;
     }
     case 0xB7:
@@ -1671,15 +1777,19 @@ void emulateCycle()
         break;
     case 0xB6:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        orOperation(&readValue, 8);
+        orOperation(&readValue, 4);
         break;
     }
     case 0xF6:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        orOperation(&readValue, 8);
+        orOperation(&readValue, 4);
         break;
     }
     case 0xAF:
@@ -1705,15 +1815,19 @@ void emulateCycle()
         break;
     case 0xAE:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        xorOperation(&readValue, 8);
+        xorOperation(&readValue, 4);
         break;
     }
     case 0xEE:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        xorOperation(&readValue, 8);
+        xorOperation(&readValue, 4);
         break;
     }
     case 0xBF:
@@ -1739,15 +1853,19 @@ void emulateCycle()
         break;
     case 0xBE:
     {
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(HL.HL);
-        cpRegister(&readValue, 8);
+        cpRegister(&readValue, 4);
         break;
     }
     case 0xFE:
     {
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         unsigned char readValue = readMemory(pc);
-        cpRegister(&readValue, 8);
+        cpRegister(&readValue, 4);
         break;
     }
     case 0x3C:
@@ -1815,6 +1933,8 @@ void emulateCycle()
         //resetting Flags;
         AF.F = 0;
         pc++;
+        //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+        clockTiming(4);
         signed char e8value = (signed char)readMemory(pc);
         //the test for the CFLAG needs to use 8 total bits, in the signed form the seventh bit is thrown out as a sign value so if you have a signed
         //value of 0xFF it will be -127 instead of 255.
@@ -1834,7 +1954,7 @@ void emulateCycle()
             AF.F |= 0b00010000;
         }
         sp += e8value;
-        clockTiming(16);
+        clockTiming(12);
         break;
     }
     case 0x03:
@@ -2332,8 +2452,10 @@ void emulateCycle()
             break;
         case 0x46:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 0, 16);
+            BIT(&readValue, 0, 12);
             break;
         }
         case 0x4F:
@@ -2359,8 +2481,10 @@ void emulateCycle()
             break;
         case 0x4E:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 1, 16);
+            BIT(&readValue, 1, 12);
             break;
         }
         case 0x57:
@@ -2386,8 +2510,10 @@ void emulateCycle()
             break;
         case 0x56:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 2, 16);
+            BIT(&readValue, 2, 12);
             break;
         }
         case 0x5F:
@@ -2413,8 +2539,10 @@ void emulateCycle()
             break;
         case 0x5E:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 3, 16);
+            BIT(&readValue, 3, 12);
             break;
         }
         case 0x67:
@@ -2440,8 +2568,10 @@ void emulateCycle()
             break;
         case 0x66:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 4, 16);
+            BIT(&readValue, 4, 12);
             break;
         }
         case 0x6F:
@@ -2467,8 +2597,10 @@ void emulateCycle()
             break;
         case 0x6E:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 6, 16);
+            BIT(&readValue, 6, 12);
             break;
         }
         case 0x77:
@@ -2494,8 +2626,10 @@ void emulateCycle()
             break;
         case 0x76:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 6, 16);
+            BIT(&readValue, 6, 12);
             break;
         };
         case 0x7F:
@@ -2521,8 +2655,10 @@ void emulateCycle()
             break;
         case 0x7E:
         {
+            //increasing timer before we read because if it reads from an timer sensitive portion of the memory it can cause problems otherwise
+            clockTiming(4);
             unsigned char readValue = readMemory(HL.HL);
-            BIT(&readValue, 8, 16);
+            BIT(&readValue, 8, 12);
             break;
         }
         case 0xC7:
@@ -3939,6 +4075,22 @@ void clockTiming(unsigned char cycles)
             scanlineCounter -= cycles;
             if (scanlineCounter <= 0)
             {
+                memory[LY]++;
+                scanlineCounter = 456;
+                scanlineCounter -= scanlineUnderflow;
+                if (memory[LY] == memory[LYC])
+                {
+                    SET(&memory[STAT], 2, 0);
+                    if (testBit(memory[STAT], 6))
+                    {
+                        requestInterrupt(1);
+                    }
+                }
+                else
+                {
+                    RES(&memory[STAT], 2, 0);
+                }
+
                 if (memory[LY] == 144)
                 {
                     requestInterrupt(0);
@@ -3952,9 +4104,7 @@ void clockTiming(unsigned char cycles)
                 {
                     drawScanLine();
                 }
-                memory[LY]++;
-                scanlineCounter = 456;
-                scanlineCounter -= scanlineUnderflow;
+
             }
         }
     }
@@ -3984,7 +4134,7 @@ void renderTiles()
     bool unsign = true;
     //checking the position of memory the BG tile data is located, if testBit is true, BG = 0x8000-0x8FFF, else, 0x8800-0x97FF
     //this will determine where to search for the data of the tile number that needs to be displayed.
-    
+
     if (testBit(memory[LCDC], 4))
     {
         locationOfTileData = 0x8000;
@@ -4031,7 +4181,7 @@ void renderTiles()
 
         locationOfTileNumberBG = 0x9800;
     }
-    
+
     //the position of memory of the tile number XX is: 0x8XX0;
     unsigned char tileNumber = 0;
     unsigned char MSB = 0;//most significant bit
@@ -4048,9 +4198,9 @@ void renderTiles()
     {
         unsigned char xPos = 0;
         unsigned char yPos = 0;
-        if (isWindowEnabled && memory[LY] >= windowY && x >= windowX )
+        if (isWindowEnabled && memory[LY] >= windowY && x >= windowX)
         {
-            xPos = (((x - windowX)/8) & 0x1F);
+            xPos = (((x - windowX) / 8) & 0x1F);
             yPos = memory[LY] - windowY;
             if (unsign)
             {
@@ -4074,7 +4224,7 @@ void renderTiles()
                 tileNumber = (signed char)memory[((locationOfTileNumberBG)+xPos) + ((yPos / 8) * 32)];
             }
         }
-        
+
         //printf("tileNumber: %X   lineOfTile[0]: ", tileNumber);
 
         //for every tile there is 16 bytes, for 2 bytes there is 8 pixels to be drawn. 
@@ -4107,7 +4257,7 @@ void renderTiles()
         {
             pixelPosition = ((ScrollX + x) % 8);
         }
-        
+
         MSB = (lineOfTile[1] & (0b10000000 >> pixelPosition));
         MSB >>= (7 - pixelPosition);
         LSB = (lineOfTile[0] & (0b10000000 >> pixelPosition));
@@ -4221,6 +4371,15 @@ void renderSprites()
         unsigned char spriteBytes[4] = { 0 };
         unsigned short memoryLocation;
         unsigned short tileNumber;
+        unsigned short spriteHeight;
+        if (testBit(memory[LCDC], 2))
+        {
+            spriteHeight = 16;
+        }
+        else
+        {
+            spriteHeight = 8;
+        }
 
         for (int x = 0; x < 40; x++)
         {
@@ -4230,67 +4389,68 @@ void renderSprites()
                 memoryLocation = byteStartPoint + bytes;
                 spriteBytes[bytes] = memory[memoryLocation];
             }
+
             unsigned char spriteBytes0Minus16 = spriteBytes[0] - 16;
-            if (spriteBytes0Minus16 > 0 && spriteBytes0Minus16 < 160)
+            if (memory[byteStartPoint] >= 0 && spriteBytes0Minus16 < 144)
             {
-                unsigned char yPixel = 0;
-                if (memory[LY] - spriteBytes0Minus16 == 8)
+                unsigned char yPixel = memory[LY] - spriteBytes0Minus16;
+                if (yPixel < spriteHeight)
                 {
-                    while ((spriteBytes0Minus16 + yPixel) <= memory[LY] && yPixel != 8)
+                    unsigned char MSB = 0;//most significant bit
+                    unsigned char LSB = 0;//less significant bit
+                    unsigned char lineOfTile[2];
+                    unsigned char xPosition = spriteBytes[1];
+                    unsigned char yPosition = memory[LY] - spriteBytes[0];
+                    if (testBit(memory[LCDC], 2))
                     {
-                        unsigned char MSB = 0;//most significant bit
-                        unsigned char LSB = 0;//less significant bit
-                        unsigned char lineOfTile[2];
-                        unsigned char xPosition = spriteBytes[1];
-                        unsigned char yPosition = memory[LY] - spriteBytes[0];
-
-                        tileNumber = (0x8000 + (spriteBytes[2] << 4));
-                        unsigned short yPixelX2 = yPixel << 1;
-                        memoryLocation = (tileNumber)+(yPixelX2);
-                        lineOfTile[0] = memory[memoryLocation];
-                        memoryLocation = (tileNumber)+(yPixelX2)+1;
-                        lineOfTile[1] = memory[memoryLocation];
-
-                        for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
+                        tileNumber = (0x8000 + ((spriteBytes[2] & 0xFE) << 4));
+                    }
+                    else
+                    {
+                        tileNumber = (0x8000 + ((spriteBytes[2]) << 4));
+                    }
+                    unsigned short yPixelX2 = yPixel << 1;
+                    memoryLocation = (tileNumber)+(yPixelX2);
+                    lineOfTile[0] = memory[memoryLocation];
+                    memoryLocation = (tileNumber)+(yPixelX2)+1;
+                    lineOfTile[1] = memory[memoryLocation];
+                    for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
+                    {
+                        //flip vertically
+                        if (testBit(spriteBytes[3], 5))
                         {
-                            //flip vertically
-                            if (testBit(spriteBytes[3], 5))
+                            MSB = (lineOfTile[1] & (0b00000001 << xPixel));
+                            MSB >>= (xPixel);
+                            LSB = (lineOfTile[0] & (0b00000001 << xPixel));
+                            LSB >>= (xPixel);
+                            //flip horizontaly
+                            if (testBit(spriteBytes[3], 6))
                             {
-                                MSB = (lineOfTile[1] & (0b00000001 << xPixel));
-                                MSB >>= (xPixel);
-                                LSB = (lineOfTile[0] & (0b00000001 << xPixel));
-                                LSB >>= (xPixel);
-                                //flip horizontaly
-                                if (testBit(spriteBytes[3], 6))
-                                {
-                                    colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
-                                }
-                                else
-                                {
-                                    colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
-                                }
-
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
                             }
                             else
                             {
-                                MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
-                                MSB >>= (7 - xPixel);
-                                LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
-                                LSB >>= (7 - xPixel);
-                                if (testBit(spriteBytes[3], 6))
-                                {
-                                    colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
-                                }
-                                else
-                                {
-                                    colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
-                                }
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
+                            }
+
+                        }
+                        else
+                        {
+                            MSB = (lineOfTile[1] & (0b10000000 >> xPixel));
+                            MSB >>= (7 - xPixel);
+                            LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
+                            LSB >>= (7 - xPixel);
+                            if (testBit(spriteBytes[3], 6))
+                            {
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
+                            }
+                            else
+                            {
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
                             }
                         }
-                        yPixel++;
                     }
                 }
-                
             }
         }
     }
@@ -4352,7 +4512,7 @@ void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, un
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
                 pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
-                SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
                 break;
             }
             break;
@@ -4433,18 +4593,7 @@ void setLCDSTAT()
             requestInterrupt(1);
         }
 
-        if (memory[LY] == memory[LYC])
-        {
-            SET(&memory[STAT], 2, 0);
-            if (testBit(memory[STAT], 6))
-            {
-                requestInterrupt(1);
-            }
-        }
-        else
-        {
-            RES(&memory[STAT], 2, 0);
-        }
+
     }
 }
 
@@ -4454,7 +4603,8 @@ void updateTimers(unsigned char cycles)
     divCounter -= cycles;
     if (divCounter <= 0)
     {
-        divCounter = CLOCKSPEED / FREQUENCY_11;
+
+        divCounter = (CLOCKSPEED / FREQUENCY_11) - divCounter;
         memory[DIV]++;
 
         //RtcTimers increases in a rate of 32,768Hz, DIV increases in exactly half the time, so we can check if DIV increased 2 times after the last
@@ -4468,23 +4618,62 @@ void updateTimers(unsigned char cycles)
     //if bit 2 of register FF07 is 1, then the timer is enabled
     if (testBit(memory[TMC], 2))
     {
+        //there's a delay on the timer interrupt of one cycle.
+        if (timerInterruptDelay)
+        {
+            timerInterruptDelay = false;
+            requestInterrupt(2);
+            setClockFrequency();
+            return;
+        }
         timerCounter -= cycles;
         if (timerCounter <= 0)
         {
-            //setting clock frequency
-            setClockFrequency();
-            //updating timer
-            if (memory[TIMA] == 255)
-            {
-
-                writeInMemory(TIMA, memory[TMA]);
-                requestInterrupt(2);
-            }
-            else
-            {
-                memory[TIMA]++;
-            }
+            char timerCounterUnderflow = timerCounter;
+            updateTIMA();
+            timerCounter -= timerCounterUnderflow;
         }
+    }
+}
+
+void updateTIMA()
+{
+    //setting clock frequency
+
+    //updating timer
+    if (memory[TIMA] == 255)
+    {
+        writeInMemory(TIMA, memory[TMA]);
+        timerInterruptDelay = true;
+        //requestInterrupt(2);
+    }
+    else
+    {
+        setClockFrequency();
+        memory[TIMA]++;
+    }
+}
+
+void setClockFrequency()
+{
+    switch (memory[TMC] & 0b00000011)
+    {
+    case 00:
+        timerCounter = CLOCKSPEED / FREQUENCY_00;
+        timerFrequencyChosen = CLOCKSPEED / FREQUENCY_00;
+        break;
+    case 01:
+        timerCounter = CLOCKSPEED / FREQUENCY_01;
+        timerFrequencyChosen = CLOCKSPEED / FREQUENCY_01;
+        break;
+    case 02:
+        timerCounter = CLOCKSPEED / FREQUENCY_10;
+        timerFrequencyChosen = CLOCKSPEED / FREQUENCY_10;
+        break;
+    case 03:
+        timerCounter = CLOCKSPEED / FREQUENCY_11;
+        timerFrequencyChosen = CLOCKSPEED / FREQUENCY_11;
+        break;
     }
 }
 
@@ -4520,8 +4709,9 @@ void doInterrupts()
 
 void setInterruptAddress(unsigned char bit)
 {
+    bool jumpOccurred = false;
     masterInterrupt = false;
-    RES(&memory[IF], bit, 4);
+    RES(&memory[IF], bit, 0);
     unsigned char highByte = (pc >> 8);
     unsigned char lowByte = (pc & 0xFF);
     PUSH(&highByte, &lowByte);
@@ -4546,6 +4736,8 @@ void setInterruptAddress(unsigned char bit)
         pc = 0x60;
         break;
     }
+    //it takes 20 cycles to make an interrupt happen.
+    clockTiming(20);
 }
 
 void writeInMemory(unsigned short memoryLocation, unsigned char data)
@@ -4617,6 +4809,15 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
     else if (memoryLocation == DIV)
     {
         memory[DIV] = 0;
+        divCounter = (CLOCKSPEED / FREQUENCY_11);
+        /*if (timerCounter <= timerFrequencyChosen/2)
+        {
+            updateTIMA();
+        }
+        else
+        {
+            setClockFrequency();
+        }*/
     }
     else if (memoryLocation == LY)
     {
@@ -4627,11 +4828,31 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
         unsigned char currentFrequency = memory[TMC] & 0b00000111;
         memory[TMC] = data;
         unsigned char newFrequency = memory[TMC] & 0b00000111;
-        if (newFrequency != currentFrequency)
+        if (!testBit(newFrequency, 2) && testBit(currentFrequency, 2))
+        {
+            if (timerCounter <= timerFrequencyChosen / 2)
+            {
+                updateTIMA();
+            }
+            else
+            {
+                setClockFrequency();
+            }
+        }
+        else if (((currentFrequency & 0x3) == 0x0) && ((newFrequency & 0x3) == 1) && testBit(newFrequency, 2))
+        {
+            updateTIMA();
+        }
+        else if ((newFrequency & 0x3) != (currentFrequency & 0x3))
         {
             setClockFrequency();
         }
     }
+    //THIS BUGS OUT THE EMULATOR
+    /*else if (memoryLocation == TIMA)
+    {
+        //IMPLEMENT 5.6. Timer Overflow Behaviour FROM ANTONIO DOCS
+    }*/
     else if (memoryLocation == 0xFF68)
     {
         memory[memoryLocation]++;
@@ -4644,6 +4865,7 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
     //bug on DMG models that triggers a STAT interrupt anytime the STAT register is written.
     else if (memoryLocation == STAT)
     {
+        memory[STAT] = ((0b10000111 & memory[STAT]) | (data & 0b01111000));
         requestInterrupt(1);
     }
     else if (memoryLocation == 0xFF46)
@@ -4657,6 +4879,10 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
             memory[0xFF00] |= 0xF;
         }
         memory[0xFF00] = ((data & 0b00110000) | (memory[0xFF00] & 0b11001111));
+    }
+    else if (memoryLocation == 0xFF0F)
+    {
+        memory[memoryLocation] = ((data & 0b00011111) | (0b11100000));
     }
     else
     {
@@ -4737,7 +4963,7 @@ unsigned char readMemory(unsigned short memoryLocation)
         {
             return cartridgeMemory[(memoryLocation - 0x4000) + (romBankNumber * 0x4000)];
         }
-        
+
         return memory[memoryLocation];
     }
     if (memoryLocation == 0xFF00)
@@ -4763,32 +4989,38 @@ unsigned char readMemory(unsigned short memoryLocation)
     }
     if (memoryLocation == STAT)
     {
-        unsigned char data = 0b10000000;
-        data |= memory[STAT];
+        unsigned char data = memory[STAT];
+        if (!testBit(memory[LCDC], 7))
+        {
+            data &= 0b11111000;
+        }
         return data;
+    }
+    if ((memoryLocation >= 0x8000 && memoryLocation <= 0x9FFF))
+    {
+        if ((memory[STAT] & 0x3) == 3)
+        {
+            return 0xFF;
+        }
+        else
+        {
+            return memory[memoryLocation];
+        }
+    }
+    if ((memoryLocation >= 0xFE00 && memoryLocation <= 0xFE9F))
+    {
+        if ((memory[STAT] & 0x3) == 2 || (memory[STAT] & 0x3) == 3)
+        {
+            return 0xFF;
+        }
+        else
+        {
+            return memory[memoryLocation];
+        }
     }
 
     return memory[memoryLocation];
 
-}
-
-void setClockFrequency()
-{
-    switch (memory[TMC] & 0b00000011)
-    {
-    case 00:
-        timerCounter = CLOCKSPEED / FREQUENCY_00;
-        break;
-    case 01:
-        timerCounter = CLOCKSPEED / FREQUENCY_01;
-        break;
-    case 02:
-        timerCounter = CLOCKSPEED / FREQUENCY_10;
-        break;
-    case 03:
-        timerCounter = CLOCKSPEED / FREQUENCY_11;
-        break;
-    }
 }
 
 bool testBit(unsigned char data, unsigned char bit)
@@ -4805,9 +5037,14 @@ void dmaTransfer(unsigned char data)
 {
     //multiplying by 100
     unsigned short dataAdress = data << 8;
+    clockTiming(4);
     for (int x = 0; x < 0xA0; x++)
     {
+        //every byte copied updates the timing by 4
+        clockTiming(4);
         writeInMemory(0xFE00 + x, memory[dataAdress + x]);
+        //interrupts can still happen in dmaTransfer
+        doInterrupts();
     }
 }
 
@@ -5173,23 +5410,22 @@ void getRomBankNumber(unsigned char data)
     if (MBC3Enabled)
     {
         romBankNumber = (data & 0x7F);
+        if (MBC3Enabled && romBankNumber == 0)
+        {
+            romBankNumber = 0x01;
+        }
     }
     else
     {
         romBankNumber = (data & 0x1F);
-    }
-    if (MBC1Enabled && (romBankNumber & 0x1F) == 0)
-    {
-        romBankNumber |= 0x01;
-    }
-    if (MBC3Enabled && romBankNumber == 0)
-    {
-        romBankNumber = 0x01;
-        return;
-    }
-    if (romBankNumber > maxRomBankNumber)
-    {
-        romBankNumber = (romBankNumber % maxRomBankNumber);
+        if (romBankNumber > maxRomBankNumber)
+        {
+            romBankNumber = (romBankNumber % maxRomBankNumber);
+        }
+        if ((romBankNumber & 0x1F) == 0)
+        {
+            romBankNumber |= 0x01;
+        }
     }
     if (oldBankNumber != romBankNumber)
     {
@@ -5212,15 +5448,21 @@ void RomRamBankNumber(unsigned char data)
         }
         else
         {
+
             unsigned char upperBits = ((data & 0x03) << 5);
-            romBankNumber |= (upperBits & 0x1F);
+            romBankNumber &= 0x1F;
+            romBankNumber |= (upperBits);
             if (maxRomBankNumber == 0)
             {
-                romBankNumber = 1;
+                romBankNumber = 0x01;
             }
             else if (romBankNumber > maxRomBankNumber)
             {
                 romBankNumber = (romBankNumber % maxRomBankNumber);
+            }
+            if ((romBankNumber & 0x1F) == 0)
+            {
+                romBankNumber |= 0x01;
             }
         }
     }
@@ -5252,7 +5494,7 @@ void RomRamModeSelect(unsigned char data)
         }
         else
         {
-            romBankNumber &= (ramBankNumber << 5);
+            //romBankNumber &= (ramBankNumber << 5);
             RomRamSELECT = false;
             ramBankNumber = 0;
         }
