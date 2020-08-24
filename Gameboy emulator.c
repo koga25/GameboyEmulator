@@ -199,6 +199,13 @@ unsigned char RTC_Hours = 0;
 unsigned char RTC_LowDay = 0;
 unsigned char RTC_HighDay = 0;
 
+//////////////////////////////////////////////////////////Timing Hacks//////////////////////////////////////////////////////////////////////////////////
+//when the LCD overflows from 153 to 0 it stays in 153 for another clock and if LYC == 153 it requests an interrupt when LY is finally set to 0
+bool LCD_Line_Overflow = false; 
+//IF VBlank interrupt bit is only changed to '1' during one cycle (when the LCD controller goes from non - VBL mode to VBL mode).
+//If the IF register bit is set to  '0' the same cycle it's going to '1', the interrupt isn't triggered (IF will remain '0').
+bool VBlank_Set_To_0 = false;
+
 //we will assign the ram the total ram in according to the total ram banks later.
 unsigned char* ram;
 unsigned char ramBankNumber = 0;
@@ -409,6 +416,8 @@ void initialize()
     //Initializing PC
     pc = PCStart;
 
+    scanlineCounter += 56;
+
     //initializing registers
     AF.AF = 0x01B0;
     BC.BC = 0x0013;
@@ -458,7 +467,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Castlevania Adventure, The (E) [!].gb", "rb");
+    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\intr_timing.gb", "rb");
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\ram_64kb.gb"
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Akumajou Dracula - Shikkokutaru Zensoukyoku (J) [S][!].gb"
     if (file == NULL) {
@@ -1002,6 +1011,8 @@ void emulateCycle()
     //pc = 0x0296 -> going to vblank interrupt     BGB -> lcd interrupt
     //pc == 0xc2c3, memory[0xFF05] == 01, opcode B6, operation OR with read value (HL.HL) doesn't work (intended -> AF.AF: 0x0100, actual -> AF.AF: 0x0080
     //pc == 0x590 -> Castlevania adventures
+    //castlevania adventures -> 27 times in 0x0B02 after pc 0x590 and it breaks.
+    //japanese castlevania pc==0x4032
     opcode = memory[pc];
     //memory[0xdef8] == 0x88
     //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], LY[%X], , AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, memory[LY], AF.AF, BC.BC, DE.DE, HL.HL);
@@ -4078,18 +4089,6 @@ void clockTiming(unsigned char cycles)
                 memory[LY]++;
                 scanlineCounter = 456;
                 scanlineCounter -= scanlineUnderflow;
-                if (memory[LY] == memory[LYC])
-                {
-                    SET(&memory[STAT], 2, 0);
-                    if (testBit(memory[STAT], 6))
-                    {
-                        requestInterrupt(1);
-                    }
-                }
-                else
-                {
-                    RES(&memory[STAT], 2, 0);
-                }
 
                 if (memory[LY] == 144)
                 {
@@ -4098,6 +4097,7 @@ void clockTiming(unsigned char cycles)
                 }
                 else if (memory[LY] > 153)
                 {
+
                     memory[LY] = 0;
                 }
                 else if (memory[LY] <= 143)
@@ -4556,22 +4556,36 @@ void setLCDSTAT()
     bool reqInterrupt = false;
     if (memory[LY] >= 144)
     {
-        //setting mode
-        mode = 1;
-        //setting mode bits
-        SET(&memory[STAT], 0, 0);
-        RES(&memory[STAT], 1, 0);
-        //check if bit 4 is active. If it is, request an LCD interrupt
-        reqInterrupt = testBit(memory[STAT], 4);
+        if (scanlineCounter >= 456)
+        {
+
+        }
+        else
+        {
+            //setting mode
+            mode = 1;
+            //setting mode bits
+            SET(&memory[STAT], 0, 0);
+            RES(&memory[STAT], 1, 0);
+            //check if bit 4 is active. If it is, request an LCD interrupt
+            reqInterrupt = testBit(memory[STAT], 4);
+        }
     }
     else
     {
-        if (scanlineCounter >= 376)
+        if (scanlineCounter > 376)
         {
-            mode = 2;
-            SET(&memory[STAT], 1, 0);
-            RES(&memory[STAT], 0, 0);
-            reqInterrupt = testBit(memory[STAT], 5);
+            if (scanlineCounter >= 456)
+            {
+
+            }
+            else
+            {
+                mode = 2;
+                SET(&memory[STAT], 1, 0);
+                RES(&memory[STAT], 0, 0);
+                reqInterrupt = testBit(memory[STAT], 5);
+            }
         }
         else if (scanlineCounter >= 204)
         {
@@ -4586,14 +4600,30 @@ void setLCDSTAT()
             RES(&memory[STAT], 0, 0);
             reqInterrupt = testBit(memory[STAT], 3);
         }
+        if (memory[LY] == memory[LYC])
+        {
+            if (scanlineCounter >= 456)
+            {
 
+            }
+            else
+            {
+                SET(&memory[STAT], 2, 0);
+                if (testBit(memory[STAT], 6))
+                {
+                    requestInterrupt(1);
+                }
+            }
+        }
+        else
+        {
+            RES(&memory[STAT], 2, 0);
+        }
         //the mode interrupt in STAT is enabled and there was a transition of the mode selected. request an interrupt
         if (reqInterrupt && (mode != currentMode))
         {
             requestInterrupt(1);
         }
-
-
     }
 }
 
@@ -4784,6 +4814,11 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
                     memory[memoryLocation] = data;
                     return;
                 }
+                else if (RomRamSELECT)
+                {
+                    ram[memoryLocation - 0xA000] = data;
+                    return;
+                }
                 ram[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)] = data;
 
                 //memory[memoryLocation] = data;
@@ -4901,6 +4936,10 @@ unsigned char readMemory(unsigned short memoryLocation)
                 if (maxRamBankNumber == 0)
                 {
                     return memory[memoryLocation];
+                }
+                else if (RomRamSELECT)
+                {
+                    return ram[memoryLocation - 0xA000];
                 }
                 return ram[(memoryLocation - 0xA000) + (ramBankNumber * 0x2000)];
                 /*if (ramBankNumber == 0 || !RomRamSELECT)
@@ -5418,13 +5457,14 @@ void getRomBankNumber(unsigned char data)
     else
     {
         romBankNumber = (data & 0x1F);
-        if (romBankNumber > maxRomBankNumber)
-        {
-            romBankNumber = (romBankNumber % maxRomBankNumber);
-        }
+
         if ((romBankNumber & 0x1F) == 0)
         {
             romBankNumber |= 0x01;
+        }
+        if (romBankNumber > maxRomBankNumber)
+        {
+            romBankNumber = (romBankNumber % maxRomBankNumber);
         }
     }
     if (oldBankNumber != romBankNumber)
@@ -5452,6 +5492,7 @@ void RomRamBankNumber(unsigned char data)
             unsigned char upperBits = ((data & 0x03) << 5);
             romBankNumber &= 0x1F;
             romBankNumber |= (upperBits);
+            unsigned char currentRom = romBankNumber;
             if (maxRomBankNumber == 0)
             {
                 romBankNumber = 0x01;
@@ -5460,10 +5501,10 @@ void RomRamBankNumber(unsigned char data)
             {
                 romBankNumber = (romBankNumber % maxRomBankNumber);
             }
-            if ((romBankNumber & 0x1F) == 0)
+            /*if (currentRom == 0x0 || currentRom == 0x20 || currentRom == 0x40 || currentRom == 0x60)
             {
                 romBankNumber |= 0x01;
-            }
+            }*/
         }
     }
     else if (MBC3Enabled)
