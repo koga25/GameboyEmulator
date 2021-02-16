@@ -7,8 +7,6 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include "SDL.h"
-#include <SDL_vulkan.h>
-#include <vulkan/vulkan.h>
 #include "SDL_image.h"
 #include <Windows.h>
 
@@ -88,36 +86,6 @@ union registerHL
     unsigned short HL;
 };
 
-struct vulkanContext {
-
-    unsigned long layerCount;
-    const char* layers;
-
-    unsigned long extensionsCount;
-    const char* extensions;
-
-    unsigned long width;
-    unsigned long height;
-
-    VkInstance instance;
-    VkDebugUtilsMessengerEXT debugMessenger;
-    VkSurfaceKHR surface;
-
-    VkDevice device;
-    VkPhysicalDevice physicalDevice;
-    VkPhysicalDeviceProperties physicalDeviceProperties;
-
-    unsigned long presentQueueIdx;
-    VkQueue presentQueue;
-
-    VkSwapchainKHR swapChain;
-    VkImage* swapChainImages;
-    VkFormat swapChainFormat;
-    VkExtent2D swapChainExtent;
-
-    VkImageView* swapChainImageViews;
-
-}context;
 
 //cpu
 unsigned char memory[0xFFFF + 1] = { 0 }; //65536 bytes 
@@ -163,6 +131,10 @@ int timerFrequencyChosen = CLOCKSPEED / FREQUENCY_00;
 int divCounter = CLOCKSPEED / FREQUENCY_11;
 //the cycles the divider register was on until now
 int dividerRegisterCycles = 0;
+//background and sprite 0&1 palletes (in order)
+unsigned long int colorPalletes[3][4] = { 0xE0F8D0FF, 0x88C070FF, 0x346856FF, 0x081820FF, 
+                                          0xE0F8D0FF, 0x88C070FF, 0x346856FF, 0x081820FF, 
+                                          0xE0F8D0FF, 0x88C070FF, 0x346856FF, 0x081820FF};
 unsigned char pixelFIFOBG[256][2] = { 0 };
 
 //interrupts and joypad
@@ -237,23 +209,6 @@ bool everytime = false;
 void print_binary(int number);
 //sdl and Vulkan
 void setupGraphics();
-void setupVulkan();
-void createVulkanInstance();
-void createSurface();
-void setupDebugMessenger();
-void pickPhysicalDevice();
-void pickLogicalDevice();
-void getSwapChain();
-void createImageViews();
-void createGraphicsPipeline();
-/*void vkCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask,
-                          VkDependencyFlags dependencyFlags, unsigned long memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers,
-                          unsigned long bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
-                          const VkImageMemoryBarrier* pImageMemoryBarriers);*/
-void checkVulkanResult(VkResult result, char* String);
-
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
-    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
 int main(int argc, char* argv[]);
 //gameboy
 void initialize();
@@ -314,6 +269,7 @@ void clockTiming(unsigned char cycles);
 void updateTimers(unsigned char cycles);
 void updateTIMA();
 void writeInMemory(unsigned short memoryLocation, unsigned char registerA);
+void assignPalleteHex(unsigned char whichPallete, unsigned short memoryLocation);
 unsigned char readMemory(unsigned short memoryLocation);
 void setClockFrequency();
 void setLCDSTAT();
@@ -322,7 +278,7 @@ void renderTiles();
 void renderSprites();
 void renderDebug();
 void colorDebug(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel);
-void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel, bool sprite);
+void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel, bool sprite, unsigned char chosenPallete);
 void doInterrupts();
 void setInterruptAddress(unsigned char bit);
 void requestInterrupt(unsigned char bit);
@@ -347,10 +303,9 @@ void quitGame();
 
 int main(int argc, char* argv[])
 {
-    loadGame("oi");
+    loadGame("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Pokemon Red (UE) [S][!].gb");
     initialize();
     setupGraphics();
-    setupVulkan();
     bool condition = false;
     //seeing what MBC bank is used.
     if (memory[0x147] != 0)
@@ -463,7 +418,7 @@ void initialize()
 void loadGame(char* gameName)
 {
     //opening file in binary form
-    FILE* file = fopen("C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\intr_timing.gb", "rb");
+    FILE* file = fopen(gameName, "rb");
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Tests\\Gekkio_MooneyeGB_Tests\\ram_64kb.gb"
     //"C:\\Users\\xerather\\source\\repos\\Gameboy emulator\\Gameboy emulator\\Games\\Akumajou Dracula - Shikkokutaru Zensoukyoku (J) [S][!].gb"
     if (file == NULL) {
@@ -561,414 +516,6 @@ void setupGraphics()
     }
 }
 
-void setupVulkan()
-{
-    context.width = 320;
-    context.height = 288;
-
-    createVulkanInstance();
-    createSurface();
-    setupDebugMessenger();
-    pickPhysicalDevice();
-    pickLogicalDevice();
-    getSwapChain();
-}
-
-void createVulkanInstance()
-{
-
-    //Informations about the APP
-    //I'm not sure why we couldn't initialize between braces, = { appInfo.sType = ...}
-    VkApplicationInfo appInfo = { 0 };
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pNext = NULL;
-    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.pApplicationName = "GorodBoy";
-    appInfo.pEngineName = "No Engine";
-    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_0;
-
-
-    //creating the info about the APP
-    VkInstanceCreateInfo createInfo = { 0 };
-    createInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    createInfo.pApplicationInfo = &appInfo;
-    createInfo.enabledLayerCount = 0;
-    createInfo.ppEnabledLayerNames = NULL;
-    createInfo.enabledExtensionCount = 0;
-    createInfo.ppEnabledExtensionNames = NULL;
-
-    //getting the list of all available layers that we have
-    unsigned long layerCount = 0;
-    checkVulkanResult(vkEnumerateInstanceLayerProperties(&layerCount, NULL), "Couldn't enumerate layer properties of instance");
-    VkLayerProperties* layersAvailable = (VkLayerProperties*)malloc(layerCount * sizeof(VkLayerProperties));
-    if (layersAvailable == NULL)
-    {
-        printf("Couldn't allocate layersAvailable");
-        exit(0);
-    }
-    checkVulkanResult(vkEnumerateInstanceLayerProperties(&layerCount, layersAvailable), "Couldn't enumerate layer properties of instance");
-
-    //finding if the layer we want is on the list
-    bool foundValidation = false;
-    for (unsigned long i = 0; i < layerCount; ++i)
-    {
-        if (strcmp(layersAvailable[i].layerName, "VK_LAYER_KHRONOS_validation") == 0)
-        {
-            foundValidation = true;
-        }
-    }
-
-    //if it is, enable the said layer
-    if (!foundValidation)
-    {
-        printf("Couldn't find the specified layer");
-        exit(0);
-    }
-    const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
-    unsigned long numberRequiredLayers = sizeof(layers) / sizeof(char*);
-    createInfo.enabledLayerCount = numberRequiredLayers;
-    createInfo.ppEnabledLayerNames = layers;
-
-    //saving to use later
-    //strlen does not include the NULL character in a string, so we add (+1 * numberRequiredLayers)
-
-    context.layers = (const char*)malloc(numberRequiredLayers * sizeof(layers) + (1 * numberRequiredLayers));
-    context.layers = *layers;
-    context.layerCount = layerCount;
-
-    //getting the list of all available extensions that we have
-    unsigned long extensionCount = 0;
-    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, NULL);
-    VkExtensionProperties* extensionsAvailable = (VkExtensionProperties*)malloc(extensionCount * sizeof(VkExtensionProperties));
-    if (extensionsAvailable == NULL)
-    {
-        printf("Couldn't allocate extensionsAvailable");
-        exit(0);
-    }
-    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, extensionsAvailable);
-
-    //finding if the extensions we want is available
-    const char* extensions[] = { "VK_KHR_surface", "VK_EXT_debug_utils", "VK_KHR_win32_surface" };
-    if (extensions == NULL)
-    {
-        printf("Couldn't allocate extensionsSDL");
-        exit(0);
-
-    }
-    unsigned long numberRequiredExtensions = sizeof(extensions) / sizeof(char*);
-    unsigned long foundExtensions = 0;
-    for (unsigned long i = 0; i < extensionCount; ++i)
-    {
-        for (unsigned long j = 0; j < numberRequiredExtensions; ++j)
-        {
-            if (strcmp(extensions[j], extensionsAvailable[i].extensionName) == 0)
-            {
-                foundExtensions++;
-            }
-        }
-    }
-    if (foundExtensions != numberRequiredExtensions)
-    {
-        printf("found extensions doesn't match the required number of extensions");
-        exit(0);
-    }
-    //if it is, enable the extension
-    createInfo.enabledExtensionCount = numberRequiredExtensions;
-    createInfo.ppEnabledExtensionNames = extensions;
-
-    context.extensions = (const char*)malloc(numberRequiredLayers * sizeof(extensions) + (1 * numberRequiredExtensions));
-    context.extensions = *extensions;
-    context.extensionsCount = numberRequiredExtensions;
-
-    checkVulkanResult(vkCreateInstance(&createInfo, NULL, &context.instance), "Couldn't create vulkan instance");
-
-
-}
-
-void createSurface()
-{
-    if (!SDL_Vulkan_CreateSurface(window, context.instance, &context.surface))
-    {
-        printf("couldn't create SDL Vulkan surface");
-        exit(0);
-    }
-}
-
-void setupDebugMessenger()
-{
-
-    //loading the vkDestroyDebugUtilsMessengerEXT Function
-    VkDebugUtilsMessengerCreateInfoEXT createInfo = { 0 };
-
-    PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
-    *(void**)&vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr(context.instance, "vkCreateDebugUtilsMessengerEXT");
-
-    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    createInfo.pfnUserCallback = debugCallback;
-    createInfo.pUserData = NULL;
-    checkVulkanResult(vkCreateDebugUtilsMessengerEXT(context.instance, &createInfo, NULL, &context.debugMessenger), "Failed to setup debug messenger");
-}
-
-void pickPhysicalDevice()
-{
-    context.physicalDevice = VK_NULL_HANDLE;
-
-    unsigned long devicesCount = 0;
-    vkEnumeratePhysicalDevices(context.instance, &devicesCount, NULL);
-    if (devicesCount == 0)
-    {
-        printf("There is no device with vulkan support");
-        exit(0);
-    }
-    VkPhysicalDevice* physicalDevices = (VkPhysicalDevice*)malloc(devicesCount * sizeof(VkPhysicalDevice));
-    if (physicalDevices == NULL)
-    {
-        printf("couldn't allocate memory for physicalDevices");
-        exit(0);
-    }
-    checkVulkanResult(vkEnumeratePhysicalDevices(context.instance, &devicesCount, physicalDevices), "couldn't enumerate physical devices");
-
-    for (unsigned long i = 0; i < devicesCount; ++i)
-    {
-        VkPhysicalDeviceProperties deviceProperties;
-        vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
-
-        unsigned long queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevices[i], &queueFamilyCount, NULL);
-        VkQueueFamilyProperties* queueFamilyProperties = (VkQueueFamilyProperties*)malloc(queueFamilyCount * sizeof(VkQueueFamilyProperties));
-        if (queueFamilyProperties == NULL)
-        {
-            printf("couldn't allocate memory for queueFamilyProperties");
-            exit(0);
-        }
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevices[i], &queueFamilyCount, queueFamilyProperties);
-        for (unsigned long j = 0; j < queueFamilyCount; ++j)
-        {
-            VkBool32 supportsPresent;
-            vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevices[i], j, context.surface, &supportsPresent);
-
-            if (supportsPresent && (queueFamilyProperties[j].queueFlags & VK_QUEUE_GRAPHICS_BIT))
-            {
-                context.physicalDevice = physicalDevices[i];
-                context.physicalDeviceProperties = deviceProperties;
-                context.presentQueueIdx = j;
-                break;
-            }
-        }
-        free(queueFamilyProperties);
-
-        if (context.physicalDevice == VK_NULL_HANDLE)
-        {
-            printf("couldn't find physicalDevice");
-            exit(0);
-        }
-    }
-    free(physicalDevices);
-}
-
-void pickLogicalDevice()
-{
-    VkDeviceQueueCreateInfo queueCreateInfo = { 0 };
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = context.presentQueueIdx;
-    queueCreateInfo.queueCount = 1;
-    const float queuePriorities = 0.0f;
-    queueCreateInfo.pQueuePriorities = &queuePriorities;
-
-    VkDeviceCreateInfo deviceInfo = { 0 };
-    deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    deviceInfo.queueCreateInfoCount = 1;
-    deviceInfo.pQueueCreateInfos = &queueCreateInfo;
-    deviceInfo.enabledLayerCount = 1;
-    deviceInfo.ppEnabledLayerNames = &context.layers;
-
-    const char* deviceExtensions[] = { "VK_KHR_swapchain" };
-    deviceInfo.enabledExtensionCount = 1;
-    deviceInfo.ppEnabledExtensionNames = deviceExtensions;
-
-    VkPhysicalDeviceFeatures features = { 0 };
-    features.shaderClipDistance = VK_TRUE;
-    deviceInfo.pEnabledFeatures = &features;
-
-    checkVulkanResult(vkCreateDevice(context.physicalDevice, &deviceInfo, NULL, &context.device), "couldn't create logical device");
-
-    //storing present queue
-    vkGetDeviceQueue(context.device, context.presentQueueIdx, 0, &context.presentQueue);
-}
-
-void getSwapChain()
-{
-    unsigned long formatCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(context.physicalDevice, context.surface, &formatCount, NULL);
-    VkSurfaceFormatKHR* surfaceFormats = (VkSurfaceFormatKHR*)malloc(formatCount * sizeof(VkSurfaceFormatKHR));
-    vkGetPhysicalDeviceSurfaceFormatsKHR(context.physicalDevice, context.surface, &formatCount, surfaceFormats);
-    if (surfaceFormats == NULL)
-    {
-        printf("couldn't allocate memory to surfaceFormats");
-        exit(0);
-    }
-    VkFormat colorFormat;
-    if (formatCount == 1 && surfaceFormats[0].format == VK_FORMAT_UNDEFINED) {
-        colorFormat = VK_FORMAT_B8G8R8_UNORM;
-    }
-    else
-    {
-        colorFormat = surfaceFormats[0].format;
-    }
-    VkColorSpaceKHR colorSpace;
-    colorSpace = surfaceFormats[0].colorSpace;
-
-
-    VkSurfaceCapabilitiesKHR surfaceCapabilities = { 0 };
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context.physicalDevice, context.surface, &surfaceCapabilities);
-
-
-    unsigned long desiredImageCount = 2;
-    if (desiredImageCount < surfaceCapabilities.minImageCount)
-    {
-        desiredImageCount = surfaceCapabilities.minImageCount;
-    }
-    else if (surfaceCapabilities.minImageCount != 0 && desiredImageCount > surfaceCapabilities.maxImageCount)
-    {
-        desiredImageCount = surfaceCapabilities.maxImageCount;
-    }
-
-    VkExtent2D surfaceResolution = surfaceCapabilities.currentExtent;
-    if (surfaceResolution.width == -1)
-    {
-        surfaceResolution.width = context.width;
-        surfaceResolution.height = context.height;
-    }
-    else
-    {
-        context.width = surfaceResolution.width;
-        context.height = surfaceResolution.height;
-    }
-
-    VkSurfaceTransformFlagBitsKHR preTransform = surfaceCapabilities.currentTransform;
-    if (surfaceCapabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
-    {
-        preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    }
-
-    unsigned long presentModeCount = 0;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice, context.surface, &presentModeCount, NULL);
-    VkPresentModeKHR* presentModes = (VkPresentModeKHR*)malloc(presentModeCount * sizeof(VkPresentModeKHR));
-    if (presentModes == NULL)
-    {
-        printf("couldn't allocate memory to presentModes");
-        exit(0);
-    }
-    vkGetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice, context.surface, &presentModeCount, presentModes);
-
-    VkPresentModeKHR presentationMode = VK_PRESENT_MODE_FIFO_KHR;
-
-    for (unsigned long i = 0; i < presentModeCount; ++i)
-    {
-        if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
-        {
-            presentationMode = VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
-        }
-    }
-    free(presentModes);
-
-    VkSwapchainCreateInfoKHR swapChainCreateInfo = { 0 };
-    swapChainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    swapChainCreateInfo.surface = context.surface;
-    swapChainCreateInfo.minImageCount = desiredImageCount;
-    swapChainCreateInfo.imageFormat = colorFormat;
-    swapChainCreateInfo.imageColorSpace = colorSpace;
-    swapChainCreateInfo.imageArrayLayers = 1;
-    swapChainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    swapChainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    swapChainCreateInfo.preTransform = preTransform; // 90 degree rotation
-    swapChainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    swapChainCreateInfo.presentMode = presentationMode;
-    swapChainCreateInfo.clipped = VK_TRUE;
-    swapChainCreateInfo.pQueueFamilyIndices = NULL;
-    swapChainCreateInfo.imageExtent = surfaceResolution; // it doesnt work if we put it between the braces;
-
-    checkVulkanResult(vkCreateSwapchainKHR(context.device, &swapChainCreateInfo, NULL, &context.swapChain), "Couldn't create swapChain");
-
-    vkGetSwapchainImagesKHR(context.device, context.swapChain, &desiredImageCount, NULL);
-    context.swapChainImages = (VkImage*)malloc(desiredImageCount * sizeof(VkImage));
-    if (context.swapChainImages == NULL)
-    {
-        printf("couldn't create swapChainImages");
-        exit(0);
-    }
-    vkGetSwapchainImagesKHR(context.device, context.swapChain, &desiredImageCount, context.swapChainImages);
-
-    context.swapChainFormat = surfaceFormats->format;
-    context.swapChainExtent = surfaceResolution;
-    free(surfaceFormats);
-}
-
-void createImageViews()
-{
-    context.swapChainImageViews = (VkImageView*)malloc(sizeof(context.swapChainImages));
-    if (context.swapChainImageViews == NULL)
-    {
-        printf("Couldn't create swap chain image views");
-        exit(0);
-    }
-
-    unsigned int swapChainImagesSize = sizeof(context.swapChainImages) / sizeof(*context.swapChainImages);
-    for (unsigned int i = 0; i < swapChainImagesSize; i++)
-    {
-        VkImageViewCreateInfo createInfo = { 0 };
-        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        createInfo.image = context.swapChainImages[i];
-        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        createInfo.format = context.swapChainFormat;
-        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        createInfo.subresourceRange.baseMipLevel = 0;
-        createInfo.subresourceRange.levelCount = 1;
-        createInfo.subresourceRange.baseArrayLayer = 0;
-        createInfo.subresourceRange.layerCount = 1;
-        checkVulkanResult(vkCreateImageView(context.device, &createInfo, NULL, &context.swapChainImageViews[i]), "Couldn't create imageView");
-    }
-}
-
-void createGraphicsPipeline()
-{
-
-}
-
-/*void vkCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask,
-                          VkDependencyFlags dependencyFlags, unsigned long memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers,
-                          unsigned long bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
-                          const VkImageMemoryBarrier* pImageMemoryBarriers)
-{
-
-}*/
-
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
-    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
-{
-    fprintf(stderr, "validation layer: %s\n", pCallbackData->pMessage);
-    return VK_FALSE;
-}
-
-
-void checkVulkanResult(VkResult result, char* String)
-{
-    if (result != VK_SUCCESS)
-    {
-        printf("%s\n", String);
-        exit(0);
-    }
-}
 
 void emulateCycle()
 {
@@ -1007,11 +554,11 @@ void emulateCycle()
     //pc = 0x0296 -> going to vblank interrupt     BGB -> lcd interrupt
     //pc == 0xc2c3, memory[0xFF05] == 01, opcode B6, operation OR with read value (HL.HL) doesn't work (intended -> AF.AF: 0x0100, actual -> AF.AF: 0x0080
     //pc == 0x590 -> Castlevania adventures
-    //castlevania adventures -> 27 times in 0x0B02 after pc 0x590 and it breaks.
+    //castlevania adventures -> 27 times in 0x0B02 after pc 0x590 and it breaks., MEMORY DC00, DD10
     //japanese castlevania pc==0x4032
-    opcode = memory[pc];
+       opcode = memory[pc];
     //memory[0xdef8] == 0x88
-    //printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], LY[%X], , AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, memory[LY], AF.AF, BC.BC, DE.DE, HL.HL);
+   // printf("checking opcode: [%X], pc: [%X], romBankNumber[%X], ramBankNumber[%X], LY[%X], , AF.AF:[%X], BC.BC:[%X], DE.DE:[%X], HL.HL:[%X]\n", opcode, pc, romBankNumber, ramBankNumber, memory[LY], AF.AF, BC.BC, DE.DE, HL.HL);
     switch (opcode & 0xFF)
     {
     case 0x10:
@@ -2148,11 +1695,11 @@ void emulateCycle()
         break;
     case 0xF3:
         masterInterrupt = false;
-        updateTimers(4);
+        clockTiming(4);
         break;
     case 0xFB:
         delayMasterInterrupt = true;
-        updateTimers(4);
+        clockTiming(4);
         break;
     case 0xC7:
     {
@@ -2638,7 +2185,7 @@ void emulateCycle()
             unsigned char readValue = readMemory(HL.HL);
             BIT(&readValue, 6, 12);
             break;
-        };
+        }
         case 0x7F:
             BIT(&AF.A, 7, 8);
             break;
@@ -3069,7 +2616,7 @@ void addRegister(unsigned char* registerA, unsigned char* registerB, unsigned ch
 {
     clockTiming(cycles);
     AF.F = 0;
-    //getting immediate data in the form of signed char
+    //getting immediate data in the form of unsigned char
     unsigned char e8value = *registerB;
     //getting the value of 3...0 bits in SP;
     unsigned char HFlagCheck = *registerA & 0xF;
@@ -4153,6 +3700,12 @@ void renderTiles()
     //if bit 5 is set, getting location of tile number of Windows.
     if (testBit(memory[LCDC], 5))
     {
+        //This change is not documented in the PANDOCS or the other documents that is referenced online, ZELDA needs this to display the window.
+        //if 0 <= wx < 7, wx = 7;
+        if (memory[0xFF4B] < 7 && memory[0xFF4B] >= 0)
+        {
+            memory[0xFF4B] = 7;
+        }
         windowX = memory[0xFF4B] - 7;
         windowY = memory[0xFF4A];
         isWindowEnabled = true;
@@ -4259,7 +3812,7 @@ void renderTiles()
         LSB = (lineOfTile[0] & (0b10000000 >> pixelPosition));
         LSB >>= (7 - pixelPosition);
         //ypos=2 && xpos = 2
-        colorPallete(MSB, LSB, x, memory[LY], false);
+        colorPallete(MSB, LSB, x, memory[LY], false, 0);
         /*MSB = (lineOfTile[1] & (0b10000000 >> (x % 8)));
         MSB >>= (7 - (x%8));
         LSB = (lineOfTile[0] & (0b10000000 >> (x % 8)));
@@ -4405,28 +3958,44 @@ void renderSprites()
                     {
                         tileNumber = (0x8000 + ((spriteBytes[2]) << 4));
                     }
-                    unsigned short yPixelX2 = yPixel << 1;
-                    memoryLocation = (tileNumber)+(yPixelX2);
-                    lineOfTile[0] = memory[memoryLocation];
-                    memoryLocation = (tileNumber)+(yPixelX2)+1;
-                    lineOfTile[1] = memory[memoryLocation];
+                    if (testBit(spriteBytes[3], 6))
+                    {
+                        unsigned short yPixelX2 = yPixel << 1;
+                        memoryLocation = (tileNumber) - (yPixelX2) + 30;
+                        lineOfTile[0] = memory[memoryLocation];
+                        //yPixelX2 = yPixel << 1;
+                        memoryLocation = (tileNumber) - (yPixelX2) + 1  +30;
+                        lineOfTile[1] = memory[memoryLocation];
+                    }
+                    else
+                    {
+                        unsigned short yPixelX2 = yPixel << 1;
+                        memoryLocation = (tileNumber)+(yPixelX2);
+                        lineOfTile[0] = memory[memoryLocation];
+                        //yPixelX2 = yPixel << 1;
+                        memoryLocation = (tileNumber)+(yPixelX2)+1;
+                        lineOfTile[1] = memory[memoryLocation];
+                    }
+
+                    unsigned char chosenPallete = (((spriteBytes[3] & 0x10) >> 4) + 1);
+
                     for (unsigned char xPixel = 0; xPixel < 8; xPixel++)
                     {
                         //flip vertically
-                        if (testBit(spriteBytes[3], 5))
+                        if (testBit(spriteBytes[3], 6))
                         {
                             MSB = (lineOfTile[1] & (0b00000001 << xPixel));
                             MSB >>= (xPixel);
                             LSB = (lineOfTile[0] & (0b00000001 << xPixel));
                             LSB >>= (xPixel);
                             //flip horizontaly
-                            if (testBit(spriteBytes[3], 6))
+                            if (testBit(spriteBytes[3], 5))
                             {
-                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) - 1), (spriteBytes0Minus16  + yPixel), true, chosenPallete);
                             }
                             else
                             {
-                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16  + yPixel), true, chosenPallete);
                             }
 
                         }
@@ -4436,13 +4005,13 @@ void renderSprites()
                             MSB >>= (7 - xPixel);
                             LSB = (lineOfTile[0] & (0b10000000 >> xPixel));
                             LSB >>= (7 - xPixel);
-                            if (testBit(spriteBytes[3], 6))
+                            if (testBit(spriteBytes[3], 5))
                             {
-                                colorPallete(MSB, LSB, ((xPosition - xPixel) + 8), (spriteBytes0Minus16 + yPixel), true);
+                                colorPallete(MSB, LSB, ((xPosition - xPixel) - 1), (spriteBytes0Minus16 + yPixel), true, chosenPallete);
                             }
                             else
                             {
-                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true);
+                                colorPallete(MSB, LSB, ((xPosition + xPixel) - 8), (spriteBytes0Minus16 + yPixel), true, chosenPallete);
                             }
                         }
                     }
@@ -4452,10 +4021,11 @@ void renderSprites()
     }
 }
 
-void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel, bool sprite)
+void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, unsigned char yPixel, bool sprite, unsigned char chosenPallete)
 {
     if (sprite)
     {
+
         switch (MSB)
         {
         case 0:
@@ -4467,8 +4037,8 @@ void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, un
             case 1:
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
-                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                pixels[(WIDTH * yPixel) + xPixel] = colorPalletes[chosenPallete][0x1];
+                //SDL_SetRenderDrawColor(renderer, 136, 192, 112, 255);
                 break;
             }
             break;
@@ -4478,14 +4048,14 @@ void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, un
             case 0:
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                pixels[(WIDTH * yPixel) + xPixel] = 0x427211FF;
-                //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                pixels[(WIDTH * yPixel) + xPixel] = colorPalletes[chosenPallete][0x2];
+                //SDL_SetRenderDrawColor(renderer, 52, 104, 86, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                pixels[(WIDTH * yPixel) + xPixel] = 0x102612FF;
-                //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                pixels[(WIDTH * yPixel) + xPixel] = colorPalletes[chosenPallete][0x3];
+                //SDL_SetRenderDrawColor(renderer, 8, 24, 32, 255);
                 break;
             }
             break;
@@ -4501,14 +4071,14 @@ void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, un
             case 0:
                 //white color
                 //SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                pixels[(WIDTH * yPixel) + xPixel] = 0xDCFFDCFF;
-                //SDL_SetRenderDrawColor(renderer, 220, 255, 220, 255);
+                pixels[(WIDTH * yPixel) + xPixel] = colorPalletes[chosenPallete][0];
+                //SDL_SetRenderDrawColor(renderer, 224, 248, 208, 255);
                 break;
             case 1:
                 //blue-green color
                 //SDL_SetRenderDrawColor(renderer, 51, 97, 103, 255);
-                pixels[(WIDTH * yPixel) + xPixel] = 0x294E52FF;
-                //SDL_SetRenderDrawColor(renderer, 41, 78, 82, 255);
+                pixels[(WIDTH * yPixel) + xPixel] = colorPalletes[chosenPallete][0x1];
+                //SDL_SetRenderDrawColor(renderer, 136, 192, 112, 255);
                 break;
             }
             break;
@@ -4518,14 +4088,14 @@ void colorPallete(unsigned char MSB, unsigned char LSB, unsigned char xPixel, un
             case 0:
                 //light green color
                 //SDL_SetRenderDrawColor(renderer, 82, 142, 21, 255);
-                pixels[(WIDTH * yPixel) + xPixel] = 0x427211FF;
-                //SDL_SetRenderDrawColor(renderer, 66, 114, 17, 255);
+                pixels[(WIDTH * yPixel) + xPixel] = colorPalletes[chosenPallete][0x2];
+                //SDL_SetRenderDrawColor(renderer, 52, 104, 86, 255);
                 break;
             case 1:
                 //dark green color
                 //SDL_SetRenderDrawColor(renderer, 20, 48, 23, 255);
-                pixels[(WIDTH * yPixel) + xPixel] = 0x102612FF;
-                //SDL_SetRenderDrawColor(renderer, 16, 38, 18, 255);
+                pixels[(WIDTH * yPixel) + xPixel] = colorPalletes[chosenPallete][0x3];
+                //SDL_SetRenderDrawColor(renderer, 8, 24, 32, 255);
                 break;
             }
             break;
@@ -4596,30 +4166,32 @@ void setLCDSTAT()
             RES(&memory[STAT], 0, 0);
             reqInterrupt = testBit(memory[STAT], 3);
         }
-        if (memory[LY] == memory[LYC])
-        {
-            if (scanlineCounter >= 456)
-            {
-
-            }
-            else
-            {
-                SET(&memory[STAT], 2, 0);
-                if (testBit(memory[STAT], 6))
-                {
-                    requestInterrupt(1);
-                }
-            }
-        }
-        else
-        {
-            RES(&memory[STAT], 2, 0);
-        }
+        
+        
         //the mode interrupt in STAT is enabled and there was a transition of the mode selected. request an interrupt
         if (reqInterrupt && (mode != currentMode))
         {
             requestInterrupt(1);
         }
+    }
+    if (memory[LY] == memory[LYC])
+    {
+        if (scanlineCounter >= 456)
+        {
+
+        }
+        else
+        {
+            SET(&memory[STAT], 2, 0);
+            if (testBit(memory[STAT], 6))
+            {
+                requestInterrupt(1);
+            }
+        }
+    }
+    else
+    {
+        RES(&memory[STAT], 2, 0);
     }
 }
 
@@ -4915,9 +4487,47 @@ void writeInMemory(unsigned short memoryLocation, unsigned char data)
     {
         memory[memoryLocation] = ((data & 0b00011111) | (0b11100000));
     }
+    else if (memoryLocation == 0xFF47)
+    {
+        memory[memoryLocation] = data;
+        assignPalleteHex(0, memoryLocation);
+    }
+    else if (memoryLocation == 0xFF48)
+    {
+        memory[memoryLocation] = data;
+        assignPalleteHex(1, memoryLocation);
+    }
+    else if (memoryLocation == 0xFF49)
+    {
+        memory[memoryLocation] = data;
+        assignPalleteHex(2, memoryLocation);
+    }
     else
     {
         memory[memoryLocation] = data;
+    }
+}
+
+void assignPalleteHex(unsigned char whichPallete, unsigned short memoryLocation)
+{
+    for (int i = 0; i < 4; i++)
+    {
+        if (((memory[memoryLocation] >> (2 * i)) & 0x03) == 0)
+        {
+            colorPalletes[whichPallete][i] = 0xE0F8D0FF;
+        }
+        else if (((memory[memoryLocation] >> (2 * i)) & 0x03) == 0x1)
+        {
+            colorPalletes[whichPallete][i] = 0x88C070FF;
+        }
+        else if (((memory[memoryLocation] >> (2 * i)) & 0x03) == 0x2)
+        {
+            colorPalletes[whichPallete][i] = 0x346856FF;
+        }
+        else if (((memory[memoryLocation] >> (2 * i)) & 0x03) == 0x3)
+        {
+            colorPalletes[whichPallete][i] = 0x081820FF;
+        }
     }
 }
 
@@ -5330,7 +4940,6 @@ void getMBC()
     if (memory[0x147] <= 0x3 && memory[0x147] != 0)
     {
         MBC1Enabled = true;
-        return;
     }
     else if (memory[0x147] == 0x5 || memory[0x147] == 0x6)
     {
@@ -5617,20 +5226,6 @@ void quitGame()
     SDL_DestroyRenderer(renderer);
     SDL_Quit();
 
-    //Vulkan
-    unsigned int swapChainImagesSize = sizeof(context.swapChainImages) / sizeof(*context.swapChainImages);
-    for (unsigned int i = 0; i < swapChainImagesSize; i++)
-    {
-        vkDestroyImageView(context.device, context.swapChainImageViews[i], NULL);
-    }
-    vkDestroyDevice(context.device, NULL);
-    vkDestroySurfaceKHR(context.instance, context.surface, NULL);
-    vkDestroyInstance(context.instance, NULL);
-    //loading the vkDestroyDebugUtilsMessengerEXT Function
-    //using the vkDestroyDebugUtilsMessengerEXT function
-    PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
-    *(void**)&vkDestroyDebugUtilsMessengerEXT = vkGetInstanceProcAddr(context.instance, "vkDestroyDebugUtilsMessengerEXT");
-    vkDestroyDebugUtilsMessengerEXT(context.instance, context.debugMessenger, NULL);
 
 
     //pixel array buffer
