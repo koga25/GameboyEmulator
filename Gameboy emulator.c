@@ -141,20 +141,16 @@ union registerHL HL;
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 unsigned short pc;//program counter
 const unsigned int PCStart = 0x100;//the position in memory that pc starts
-unsigned short I;//index counter
 unsigned short sp;//stack pointer
 const unsigned int StackStart = 0xFFFE;//differing from chip8 where we implemented the stack with stack[16], in gameboy the stack is already implemented
                                        //and it begins in this memory location. the POP function increments the pointer in 2 and the PUT function   
                                        //decrements it by 2;
 
 //video and timings
-unsigned char shownScreen[160][144];
-unsigned char wholeScreen[256][256];
+
 //scanlineCounter uses a 16 bit variable to represent 456 clocks, so when it becomes lower than 0 it will wrap to 456;
 //everytime it wraps around we update the LY register ($ff44) by 1, the range of the LY register is 0-153;
 int scanlineCounter = 0x1c8;
-//modes of LCD
-unsigned char LCDMode;
 //cpu does 4194304 cycles in a second and it renders in 60FPS.
 const int maxCycleBeforeRender = CLOCKSPEED / 60;
 //how many cycles the cpu did in 1 milisecond
